@@ -1,0 +1,41 @@
+# parse2wiki default configuration
+# Copy this file and customize for your project
+
+project:
+  name: "My Wiki"
+  base_path: "/path/to/project"
+
+sources:
+  input_dir: "raw"
+  skip_already_processed: true
+  supported_extensions:
+    - .pdf
+    - .docx
+    - .pptx
+    - .xlsx
+    - .zip
+
+wiki:
+  path: "wiki"
+  index_file: "index.md"
+  log_file: "log.md"
+  sources_dir: "wiki/sources"
+  frontmatter_spec: "CLAUDE.md"  # Reference to spec file
+
+llm:
+  enabled: true
+  model: "claude-sonnet-4-6"
+  only_complex_diagrams: true
+  max_tokens_per_doc: 5000
+  batch_size: 10
+
+extraction:
+  ocr_enabled: true
+  ocr_languages:
+    - eng
+  pdf_dpi: 300
+
+output:
+  extractions_dir: "outputs/extractions"
+  diagrams_dir: "outputs/diagrams"
+  logs_dir: "outputs/logs"

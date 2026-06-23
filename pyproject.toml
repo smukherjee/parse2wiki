@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parse2wiki"
+version = "0.1.0"
+description = "Convert PDF/Office documents to wiki-ready markdown with Mermaid diagrams"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Sujoy Mukherjee", email = "sujoym@gmail.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "pdfplumber>=0.10.0",
+    "pytesseract>=0.3.10",
+    "pdf2image>=1.16.3",
+    "python-docx>=1.1.0",
+    "python-pptx>=0.6.23",
+    "openpyxl>=3.1.2",
+    "pyyaml>=6.0",
+    "click>=8.1.0",
+]
+
+[project.optional-dependencies]
+llm = [
+    "anthropic>=0.25.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "black>=24.0.0",
+    "ruff>=0.3.0",
+]
+
+[project.scripts]
+parse2wiki-extract = "parse2wiki.cli:extract"
+parse2wiki-ingest = "parse2wiki.cli:ingest"
+parse2wiki-check = "parse2wiki.cli:check"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["parse2wiki*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
