@@ -17,21 +17,54 @@ import pdfplumber
 
 
 def extract_pdf_text(pdf_path: str, ocr: bool = False) -> str:
-    """Extract text from PDF using pdfplumber, optionally with OCR."""
+    """
+    Extract text from PDF using pdfplumber, with pdftotext and OCR fallbacks.
+
+    Fallback chain:
+    1. pdfplumber (best for text PDFs)
+    2. pdftotext (more robust for malformed PDFs)
+    3. OCR (for image-based PDFs)
+    """
     result = []
 
-    with pdfplumber.open(pdf_path) as pdf:
-        for i, page in enumerate(pdf.pages):
-            text = page.extract_text()
-            if text and text.strip():
-                result.append(f"## Page {i + 1}\n\n{text}\n")
-            elif ocr:
-                # OCR fallback for image-based PDFs
-                ocr_text = extract_pdf_ocr(pdf_path, i + 1)
-                if ocr_text:
-                    result.append(f"## Page {i + 1} (OCR)\n\n{ocr_text}\n")
+    # Try pdfplumber first
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for i, page in enumerate(pdf.pages):
+                text = page.extract_text()
+                if text and text.strip():
+                    result.append(f"## Page {i + 1}\n\n{text}\n")
+                elif ocr:
+                    ocr_text = extract_pdf_ocr(pdf_path, i + 1)
+                    if ocr_text:
+                        result.append(f"## Page {i + 1} (OCR)\n\n{ocr_text}\n")
 
-    return "\n".join(result) if result else "No text content found."
+        if result:
+            return "\n".join(result)
+    except Exception as e:
+        # Fall through to pdftotext
+        pass
+
+    # Fallback 2: pdftotext command line
+    try:
+        pdftotext_result = subprocess.run(
+            ["pdftotext", "-layout", pdf_path, "-"],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        if pdftotext_result.stdout.strip():
+            return f"## Extracted with pdftotext\n\n{pdftotext_result.stdout}"
+    except Exception:
+        pass
+
+    # Fallback 3: OCR (if enabled)
+    if ocr:
+        ocr_text = extract_pdf_ocr(pdf_path)
+        if ocr_text and "failed" not in ocr_text.lower():
+            return f"## Extracted with OCR\n\n{ocr_text}"
+
+    return "No text content found (PDF may be image-only or corrupted)."
 
 
 def extract_pdf_ocr(pdf_path: str, page_num: Optional[int] = None) -> str:
