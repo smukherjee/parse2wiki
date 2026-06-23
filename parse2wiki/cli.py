@@ -5,6 +5,7 @@ CLI entry points for parse2wiki.
 Commands:
 - parse2wiki-check: Check for new/unprocessed files
 - parse2wiki-extract: Extract text from documents
+- parse2wiki-extract-markitdown: Extract text using MarkItDown and PyMuPDF4LLM
 - parse2wiki-ingest: Generate wiki summaries and update index
 """
 
@@ -17,6 +18,7 @@ import click
 import yaml
 
 from .extract import process_directory, extract_file
+from .extract_markitdown import process_directory as process_directory_markitdown
 from .diagrams.detector import detect_diagrams, classify_complexity
 from .diagrams.mermaid_gen import generate_mermaid_flowchart
 from .summarizer.wiki_summary import summarize_for_wiki, generate_wiki_source_page, SummarizerConfig
@@ -90,6 +92,33 @@ def extract(input_dir: str, output_dir: str, ocr: bool, dry_run: bool, config: s
         output_dir = base / cfg['output']['extractions_dir']
 
     results = process_directory(input_dir, output_dir, ocr, dry_run)
+
+    if dry_run:
+        print(f"Files to process: {len(results)}")
+        for r in results:
+            print(f"  - {r['path']}")
+    else:
+        print(f"Extracted {len(results)} files")
+        for r in results:
+            status = "✓" if r['status'] == 'extracted' else "○"
+            print(f"  {status} {r['path']} → {r.get('output', 'nested')}")
+
+
+@cli.command("extract-markitdown")
+@click.option("--input", "-i", "input_dir", required=True, help="Input directory")
+@click.option("--output", "-o", "output_dir", help="Output directory")
+@click.option("--dry-run", is_flag=True, help="Show what would be processed")
+@click.option("--ocr", is_flag=True, help="Enable OCR for PDFs")
+@click.option("--config", "-c", help="Path to config file (overrides other options)")
+def extract_markitdown(input_dir: str, output_dir: str, dry_run: bool, ocr: bool, config: str):
+    """Extract text using MarkItDown and PyMuPDF4LLM."""
+    if config:
+        cfg = load_config(config)
+        base = Path(cfg['project']['base_path'])
+        input_dir = base / cfg['sources']['input_dir']
+        output_dir = base / cfg['output']['extractions_dir']
+
+    results = process_directory_markitdown(input_dir, output_dir, dry_run, ocr)
 
     if dry_run:
         print(f"Files to process: {len(results)}")

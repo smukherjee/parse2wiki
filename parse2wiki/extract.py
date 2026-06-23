@@ -15,6 +15,8 @@ from typing import Optional
 
 import pdfplumber
 
+from .document_pipeline import build_document_markdown, write_document_markdown
+
 
 def extract_pdf_text(pdf_path: str, ocr: bool = False) -> str:
     """
@@ -172,8 +174,10 @@ def extract_zip_contents(zip_path: str, output_dir: str) -> list:
                     ext = Path(file).suffix.lower()
                     if ext in ['.pdf', '.docx', '.pptx', '.xlsx']:
                         content = extract_file(file_path, ocr=False)
+                        output_file = write_document_markdown(output_dir, rel_path, content)
                         extracted_files.append({
                             'path': f"{zip_path}/{rel_path}",
+                            'output': str(output_file),
                             'content': content,
                             'extension': ext
                         })
@@ -224,8 +228,7 @@ def process_directory(input_dir: str, output_dir: str, ocr: bool = False, dry_ru
                     results.append({'path': str(file_path), 'status': 'would_extract'})
                 else:
                     content = extract_file(str(file_path), ocr)
-                    output_file = output_path / f"{file_path.stem}-extracted.md"
-                    output_file.write_text(content)
+                    output_file = write_document_markdown(str(output_path), str(file_path), content)
                     results.append({
                         'path': str(file_path),
                         'output': str(output_file),
@@ -251,7 +254,7 @@ def main():
         if args.dry_run:
             print(f"Would extract: {input_path}")
         else:
-            print(content)
+            print(build_document_markdown(str(input_path), content))
     else:
         results = process_directory(str(input_path), args.output or "./extractions", args.ocr, args.dry_run)
 

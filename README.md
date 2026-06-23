@@ -5,6 +5,7 @@ Convert PDF, DOCX, PPTX, XLSX, and ZIP files into wiki-ready markdown with autom
 ## Features
 
 - **Zero-token extraction** — Uses `pdftotext`, `tesseract`, `pandoc` for initial extraction
+- **Modern extraction option** — Uses `MarkItDown` + `PyMuPDF4LLM` for higher-fidelity markdown output
 - **Smart diagram detection** — Classifies diagrams as simple (deterministic Mermaid) vs complex (LLM-assisted)
 - **Token-optimized** — Only invokes LLM for complex diagrams and final summarization
 - **Wiki-agnostic** — Works with any wiki that uses markdown + frontmatter
@@ -16,6 +17,9 @@ Convert PDF, DOCX, PPTX, XLSX, and ZIP files into wiki-ready markdown with autom
 git clone https://github.com/sujoymukherjee/parse2wiki.git
 cd parse2wiki
 pip install -e .
+
+# Or install the modern extractor extra
+pip install -e ".[modern]"
 
 # Verify installation
 parse2wiki-extract --version
@@ -89,6 +93,18 @@ parse2wiki-extract --input raw/ --output outputs/extractions/ --ocr
 
 # Dry run (show what would be processed)
 parse2wiki-extract --input raw/ --dry-run
+```
+
+### `parse2wiki-extract-markitdown`
+
+Extract text using MarkItDown for Office files and PyMuPDF4LLM for PDFs.
+
+```bash
+# Install the extra first
+pip install -e ".[modern]"
+
+# Extract all files with the modern backend
+parse2wiki-extract-markitdown --input raw/ --output outputs/extractions/
 ```
 
 ### `parse2wiki-ingest`

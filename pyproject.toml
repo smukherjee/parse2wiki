@@ -34,6 +34,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+modern = [
+    "markitdown",
+    "pymupdf4llm",
+]
 llm = [
     "anthropic>=0.25.0",
 ]
@@ -45,6 +49,7 @@ dev = [
 
 [project.scripts]
 parse2wiki-extract = "parse2wiki.cli:extract"
+parse2wiki-extract-markitdown = "parse2wiki.cli:extract_markitdown"
 parse2wiki-ingest = "parse2wiki.cli:ingest"
 parse2wiki-check = "parse2wiki.cli:check"
 
