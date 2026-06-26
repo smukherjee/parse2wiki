@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "parse2wiki"
+name = "doc2md"
 version = "0.1.0"
-description = "Convert PDF/Office documents to wiki-ready markdown with Mermaid diagrams"
+description = "Deterministic document → token-optimised markdown + Mermaid pre-processor for llm_wiki"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
@@ -29,8 +29,8 @@ dependencies = [
     "python-docx>=1.1.0",
     "python-pptx>=0.6.23",
     "openpyxl>=3.1.2",
-    "pyyaml>=6.0",
     "click>=8.1.0",
+    "tiktoken>=0.7.0",
 ]
 
 [project.optional-dependencies]
@@ -38,24 +38,23 @@ modern = [
     "markitdown",
     "pymupdf4llm",
 ]
-llm = [
-    "anthropic>=0.25.0",
-]
 dev = [
     "pytest>=7.4.0",
     "black>=24.0.0",
     "ruff>=0.3.0",
 ]
 
+# External parser packages register here; each entry loads to a zero-arg
+# factory returning a doc2md.parsers.base.Parser.
+[project.entry-points."doc2md.parsers"]
+
 [project.scripts]
-parse2wiki-extract = "parse2wiki.cli:extract"
-parse2wiki-extract-markitdown = "parse2wiki.cli:extract_markitdown"
-parse2wiki-ingest = "parse2wiki.cli:ingest"
-parse2wiki-check = "parse2wiki.cli:check"
+doc2md = "doc2md.cli:main"
+doc2md-check = "doc2md.cli:check"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["parse2wiki*"]
+include = ["doc2md*"]
 
 [tool.black]
 line-length = 100

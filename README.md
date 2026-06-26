@@ -1,153 +1,80 @@
-# parse2wiki
+# doc2md
 
-Convert PDF, DOCX, PPTX, XLSX, and ZIP files into wiki-ready markdown with automatic Mermaid diagram generation.
+A **deterministic pre-processor** that converts documents into **token-optimised markdown + Mermaid**, to be fed as sources to an LLM-wiki builder ([nashsu/llm_wiki](https://github.com/nashsu/llm_wiki)).
 
-## Features
+doc2md does **not** build a wiki, summarise, or maintain an index — that is llm_wiki's job. doc2md's value is: accuracy-controlled **pluggable extraction**, **Mermaid** generation (llm_wiki can't), diagram/infographic **OCR**, and **token-optimised** output.
 
-- **Zero-token extraction** — Uses `pdftotext`, `tesseract`, `pandoc` for initial extraction
-- **Modern extraction option** — Uses `MarkItDown` + `PyMuPDF4LLM` for higher-fidelity markdown output
-- **Smart diagram detection** — Classifies diagrams as simple (deterministic Mermaid) vs complex (LLM-assisted)
-- **Token-optimized** — Only invokes LLM for complex diagrams and final summarization
-- **Wiki-agnostic** — Works with any wiki that uses markdown + frontmatter
+It ships as a **Claude skill** (`/doc2md`): Claude is the LLM and does the only two things deterministic code can't — complex text-diagram Mermaid and infographic interpretation via **vision**. The Python package is a deterministic engine that never calls an LLM (no `anthropic` SDK, no `ANTHROPIC_KEY`).
 
-## Installation
+## Install
 
 ```bash
-# Clone and install
-git clone https://github.com/sujoymukherjee/parse2wiki.git
-cd parse2wiki
-pip install -e .
-
-# Or install the modern extractor extra
-pip install -e ".[modern]"
-
-# Verify installation
-parse2wiki-extract --version
-parse2wiki-check --version
+pip install -e ".[modern]"          # markitdown + pymupdf4llm are optional extras
+doc2md parsers                      # list parsers and availability
 ```
 
-## Quick Start
-
-### 1. Create a config file
-
-```yaml
-# .parse2wiki.yaml
-project:
-  name: "My Wiki"
-  base_path: "/path/to/project"
-
-sources:
-  input_dir: "raw"
-  skip_already_processed: true
-
-wiki:
-  path: "wiki"
-  index_file: "index.md"
-  log_file: "log.md"
-  sources_dir: "wiki/sources"
-
-llm:
-  enabled: true
-  model: "claude-sonnet-4-6"
-  only_complex_diagrams: true
-```
-
-### 2. Check for new files
+Some parsers wrap system binaries (install what you want; missing ones degrade to the next parser in the fallback chain):
 
 ```bash
-parse2wiki-check --config .parse2wiki.yaml
+brew install poppler tesseract      # pdftotext, tesseract OCR
+brew install pandoc                 # pandoc (docx/html/…)
+cargo install pdf-inspector         # pdf2md (PDF → markdown, Rust)
+cargo install unpdf-cli             # unpdf (PDF → markdown, Rust)
+cargo install undoc-cli             # undoc (DOCX/XLSX/PPTX → markdown, Rust)
 ```
 
-### 3. Extract text (zero tokens)
+## Use as a skill (zero-config)
+
+Drop documents in `raw/`, run `/doc2md`. Output lands in `sources/` — feed that to llm_wiki.
+
+- **Fresh wiki:** put all source documents in `raw/`, run `/doc2md`.
+- **New sources:** drop the new documents in `raw/`, run `/doc2md` (unchanged files are skipped via a content-hash delta).
+
+The skill orchestrates the engine per document and does the LLM work (complex Mermaid + infographic vision), validating every Mermaid block before writing it. See [`skill/doc2md/SKILL.md`](skill/doc2md/SKILL.md).
+
+## Use from the shell
 
 ```bash
-parse2wiki-extract --config .parse2wiki.yaml --input raw/ --output outputs/extractions/
+doc2md convert                       # raw/ → sources/ (zero-config)
+doc2md convert --parser pdftotext    # force one parser on every file
+doc2md convert --compare              # run every available parser per file for accuracy diffing
+doc2md check                          # show new/changed files vs the manifest (hash-delta)
+doc2md parsers                        # list parsers + availability
 ```
 
-### 4. Ingest into wiki (LLM-assisted summarization)
+## Parsers (pluggable seam)
 
-```bash
-parse2wiki-ingest --config .parse2wiki.yaml --review-first
+Each extraction records which parser produced it, so accuracy can be audited. Built-in adapters: `pdf-inspector` (pdf2md), `unpdf`, `pymupdf4llm`, `pdfplumber`, `pdftotext`, `undoc`, `markitdown`, `docx` (python-docx), `pptx` (python-pptx), `xlsx` (openpyxl), `pandoc`, `image` (OCR → vision).
+
+External parser packages register via the `doc2md.parsers` entry-point group — no doc2md edit required:
+
+```toml
+# in an external plugin package's pyproject.toml
+[project.entry-points."doc2md.parsers"]
+my_parser = "my_pkg:factory"   # zero-arg factory → doc2md.parsers.base.Parser
 ```
 
-## CLI Commands
+Fallback chains (ext → ordered parser names) live in [`doc2md/parsers/registry.py`](doc2md/parsers/registry.py); reorder to change defaults.
 
-### `parse2wiki-check`
+## Token cost
 
-Check for new/unprocessed files in the source directory.
-
-```bash
-parse2wiki-check --config .parse2wiki.yaml --json  # Output as JSON
-```
-
-### `parse2wiki-extract`
-
-Extract text from documents.
-
-```bash
-# Extract all files
-parse2wiki-extract --input raw/ --output outputs/extractions/
-
-# With OCR enabled
-parse2wiki-extract --input raw/ --output outputs/extractions/ --ocr
-
-# Dry run (show what would be processed)
-parse2wiki-extract --input raw/ --dry-run
-```
-
-### `parse2wiki-extract-markitdown`
-
-Extract text using MarkItDown for Office files and PyMuPDF4LLM for PDFs.
-
-```bash
-# Install the extra first
-pip install -e ".[modern]"
-
-# Extract all files with the modern backend
-parse2wiki-extract-markitdown --input raw/ --output outputs/extractions/
-```
-
-### `parse2wiki-ingest`
-
-Generate wiki source summaries and update index.
-
-```bash
-# Interactive review mode
-parse2wiki-ingest --config .parse2wiki.yaml --review-first
-
-# Auto-approve (no review)
-parse2wiki-ingest --config .parse2wiki.yaml --auto-approve
-```
-
-## Supported File Types
-
-| Extension | Extraction Method | Mermaid Support |
-|-----------|-------------------|-----------------|
-| `.pdf` | pdftotext + tesseract OCR | Yes (workflow diagrams) |
-| `.docx` | python-docx | Yes (embedded diagrams) |
-| `.pptx` | python-pptx | Yes (slide flows) |
-| `.xlsx` | openpyxl → markdown tables | No |
-| `.zip` | unzip → recurse | Depends on contents |
-
-## Diagram Detection
-
-The tool automatically detects diagram/workflow content using keyword patterns:
-
-- **Simple diagrams** → Deterministic Mermaid generation (0 tokens)
-- **Complex diagrams** → Flagged for LLM processing (requires approval)
-
-## Token Optimization
-
-| Stage | Token Cost |
-|-------|------------|
-| Text extraction | 0 |
+| Stage | Cost |
+|-------|------|
+| Extraction (any parser) | 0 |
 | OCR | 0 |
 | Diagram detection | 0 |
-| Simple Mermaid generation | 0 |
-| Complex diagram interpretation | ~500-1500 per diagram |
-| Wiki summary generation | ~500-1000 per document |
+| Simple Mermaid | 0 |
+| Complex text-diagram Mermaid | Claude (in the skill) |
+| Infographic interpretation (vision) | Claude (in the skill) |
 
-**Typical savings: 80-90% vs naive LLM extraction**
+Unchanged files are skipped automatically, so re-runs spend zero LLM tokens.
+
+## Architecture
+
+- `doc2md/` — deterministic engine: `parsers/` (seam), `detection.py`, `mermaid.py` + `mermaid_validate.py`, `ocr.py`, `optimise.py`, `manifest.py` (content-addressed cache), `writer.py` (source + work-order), `engine.py` (library API), `cli.py`.
+- `skill/doc2md/SKILL.md` — the `/doc2md` Claude skill (Claude is the LLM).
+
+See [`CONTEXT.md`](CONTEXT.md) for the domain language and [`docs/adr/0001-skill-first-preprocessor-architecture.md`](docs/adr/0001-skill-first-preprocessor-architecture.md) for the architecture decision.
 
 ## License
 
