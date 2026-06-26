@@ -130,10 +130,15 @@ def ocr_image_multilingual(image_path: str) -> tuple[str, list[str]]:
         return "", ["eng"]
 
 
-def ocr_pdf_multilingual(pdf_path: str, *, dpi: int = 200) -> list[tuple[int, str, list[str]]]:
+def ocr_pdf_multilingual(pdf_path: str, *, dpi: int = 200, force_langs: list[str] = None) -> list[tuple[int, str, list[str]]]:
     """OCR a PDF with automatic language detection per page.
 
     Returns list of (page_num, text, languages_used) tuples.
+
+    Args:
+        pdf_path: Path to PDF file
+        dpi: Resolution for rendering pages
+        force_langs: If provided, use these languages instead of auto-detection
     """
     if not ocr_available() or not pdf2image_available():
         return []
@@ -143,6 +148,17 @@ def ocr_pdf_multilingual(pdf_path: str, *, dpi: int = 200) -> list[tuple[int, st
 
     pages = render_pdf_pages(pdf_path, dpi=dpi)
     results = []
+
+    # If force_langs provided, use those directly
+    if force_langs:
+        lang_str = "+".join(force_langs)
+        for i, img in enumerate(pages, start=1):
+            try:
+                text = pytesseract.image_to_string(img, lang=lang_str)
+                results.append((i, text or "", force_langs))
+            except Exception as exc:
+                results.append((i, "", [str(exc)]))
+        return results
 
     for i, img in enumerate(pages, start=1):
         try:
