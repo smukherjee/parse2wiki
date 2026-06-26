@@ -52,3 +52,5 @@ outputs/
 *.log
 sources/
 raw/
+doc2md-cache/
+.doc2md-cache/
