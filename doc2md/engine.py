@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from .detection import DiagramDetection, detect_diagrams
+from .finance import VerificationReport, compare_extractors, is_financial
 from .manifest import FileRecord, Manifest, hash_file
 from .mermaid import generate_simple
 from .ocr import render_pdf_pages
@@ -39,6 +40,7 @@ class ConvertReport:
     needs_llm: bool = False
     skipped: bool = False
     warnings: list[str] = field(default_factory=list)
+    verification: Optional[VerificationReport] = None
 
 
 class Engine:
@@ -51,6 +53,7 @@ class Engine:
         registry: Optional[ExtractorRegistry] = None,
         ocr: bool = True,
         parser: str | None = None,
+        finance: Optional[bool] = None,
     ) -> None:
         self.raw_dir = Path(raw_dir)
         self.sources_dir = Path(sources_dir)
@@ -61,6 +64,7 @@ class Engine:
         self.registry = registry or build_registry()
         self.ocr = ocr
         self.parser = parser
+        self.finance = finance  # True=force, False=disable, None=auto-detect
         self.manifest = Manifest(self.cache_dir)
 
     # -- discovery -----------------------------------------------------
@@ -253,6 +257,18 @@ class Engine:
             write_work_order(wo_path, order)
             report.work_order = str(wo_path)
 
+        # Finance verification — auto-detect or explicit flag
+        do_finance = self.finance
+        if do_finance is None:
+            do_finance = is_financial(result.text, path=path)
+        if do_finance:
+            verify = self.finance_verify_one(path, file_hash)
+            report.verification = verify
+            verify_path = source_path.with_suffix(".verify.json")
+            verify.write(verify_path)
+            for line in verify.summary_lines():
+                report.warnings.append(line)
+
         self._record(path, file_hash, result, detection=detection,
                      source=str(source_path), items=order, failed=False,
                      tokens_raw=tokens_raw, tokens_optimised=tokens_optimised)
@@ -280,6 +296,30 @@ class Engine:
 
     def convert_all(self) -> list[ConvertReport]:
         return [self.convert_one(p) for p in self._iter_files()]
+
+    # -- finance verification ------------------------------------------
+
+    def finance_verify_one(self, path: Path, file_hash: str) -> VerificationReport:
+        """Run all available parsers on path, compare numeric figures across them."""
+        results: dict[str, str] = {}
+        for parser in self.registry.all_for(str(path)):
+            cached = self.manifest.get_extraction(file_hash, parser.name)
+            if cached is not None:
+                results[parser.name] = cached.get("text", "")
+            else:
+                try:
+                    res = parser.extract(str(path), ocr=self.ocr)
+                except Exception as exc:
+                    logging.warning("finance verify: %s failed on %s: %s", parser.name, path, exc)
+                    continue
+                if res.ok:
+                    self.manifest.set_extraction(file_hash, parser.name, {
+                        "text": res.text,
+                        "images": res.images,
+                        "meta": res.meta,
+                    })
+                    results[parser.name] = res.text
+        return compare_extractors(results, document=str(path))
 
     # -- compare mode --------------------------------------------------
 

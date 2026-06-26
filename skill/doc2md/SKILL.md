@@ -101,6 +101,52 @@ marks the manifest record as no longer awaiting the LLM.
 Tell the user the sources are ready in `sources/` and to run llm_wiki against that
 directory. Do not summarise, build wiki pages, or write an index — that is llm_wiki's job.
 
+## Finance verification (automatic)
+
+When a document contains financial figures, a single parser can silently
+mis-read a digit or miss a decimal. The engine defends against this by running
+**all available parsers** and cross-checking every numeric figure.
+
+**Trigger:** automatic when the document contains ≥3 finance keywords
+(`revenue`, `ebitda`, `balance sheet`, …) or the filename matches a financial
+pattern (`annual-report`, `10K`, `income-statement`, etc.).
+Override at runtime:
+
+```python
+eng = Engine("raw", "sources", finance=True)   # force on
+eng = Engine("raw", "sources", finance=False)  # disable
+eng = Engine("raw", "sources")                 # auto-detect (default)
+```
+
+CLI equivalents: `doc2md convert --finance` / `doc2md convert --no-finance`.
+
+**Output:** a sibling `<source>.verify.json` is written alongside every
+converted markdown file that triggers verification:
+
+```json
+{
+  "document": "raw/Q3-results.pdf",
+  "parsers_used": ["pdf-inspector", "pymupdf4llm", "pdftotext"],
+  "total_figures": 142,
+  "mismatch_count": 2,
+  "verified": false,
+  "mismatches": [
+    {"label": "total revenue", "values": {"pymupdf4llm": "$1,234M", "pdftotext": "$1,284M"}, "flag": "warn"},
+    ...
+  ]
+}
+```
+
+**Your job when `verified` is false:**
+1. Read the verify.json and list the flagged figures to the user.
+2. Tell them: _"N figures could not be verified across parsers — check the
+   original document for these values before using this source."_
+3. Optionally: read the flagged page image with your vision and confirm the
+   correct value, then note it in the source with an inline comment.
+
+When `verified` is true, tell the user: _"All figures cross-checked across N
+parsers — no discrepancies found."_
+
 ## Accuracy tuning (optional, only if the user asks)
 
 - `doc2md convert --parser pdftotext` — force one parser on every file.

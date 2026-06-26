@@ -23,9 +23,12 @@ def cli() -> None:
 @click.option("--parser", default=None, help="Force one parser (e.g. pdftotext).")
 @click.option("--ocr/--no-ocr", default=True, show_default=True, help="Run OCR fallback + figure-page detection.")
 @click.option("--compare", is_flag=True, help="Run every available parser per file for accuracy diffing.")
-def convert(raw_dir, sources_dir, cache_dir, parser, ocr, compare):
+@click.option("--finance/--no-finance", default=None,
+              help="Finance verification: run all parsers and cross-check figures. "
+                   "Default: auto-detect from document content.")
+def convert(raw_dir, sources_dir, cache_dir, parser, ocr, compare, finance):
     """Convert documents in --raw to token-optimised markdown in --sources."""
-    eng = Engine(raw_dir, sources_dir, cache_dir, ocr=ocr, parser=parser)
+    eng = Engine(raw_dir, sources_dir, cache_dir, ocr=ocr, parser=parser, finance=finance)
     if compare:
         for p in eng._iter_files():  # noqa: SLF001
             for r in eng.compare_one(p):
