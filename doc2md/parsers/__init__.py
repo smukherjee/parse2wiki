@@ -27,6 +27,7 @@ def _importlib_parsers() -> list[Parser]:
     from .undoc import UndocParser
     from .unpdf import UnpdfParser
     from .pdf_multilingual import MultilingualPDFParser
+    from .mineru import MineruParser
 
     return [
         PdftotextParser(),
@@ -42,6 +43,7 @@ def _importlib_parsers() -> list[Parser]:
         UndocParser(),
         UnpdfParser(),
         MultilingualPDFParser(),
+        MineruParser(),
     ]
 
 

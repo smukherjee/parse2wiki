@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,7 @@ from .optimise import optimise, optimise_with_tokens
 from .parsers import build_registry
 from .parsers.base import ExtractionResult
 from .parsers.registry import ExtractorRegistry
+from .figures import graphic_dense_pages, image_dominant_pages
 from .writer import WorkItem, apply_work, build_source, write_work_order
 
 _SUPPORTED = {".pdf", ".docx", ".pptx", ".xlsx", ".doc", ".odt",
@@ -54,6 +56,9 @@ class Engine:
         ocr: bool = True,
         parser: str | None = None,
         finance: Optional[bool] = None,
+        vision_dpi: int = 150,  # P7: lower default cuts vision tokens ~30%
+        max_image_dim: int = 1024,  # cap longest edge — keeps 7-image batches under API limit
+        mineru: bool = False,  # force MinerU for every PDF (overrides parser chain)
     ) -> None:
         self.raw_dir = Path(raw_dir)
         self.sources_dir = Path(sources_dir)
@@ -65,7 +70,17 @@ class Engine:
         self.ocr = ocr
         self.parser = parser
         self.finance = finance  # True=force, False=disable, None=auto-detect
+        self.vision_dpi = vision_dpi  # P7
+        self.max_image_dim = max_image_dim
+        if mineru:
+            self.parser = "mineru"
+            # Warn eagerly so the user sees the install hint before waiting for convert_all
+            p = self.registry.parsers.get("mineru")
+            if p is not None and not p.available:
+                from .parsers.mineru import _INSTALL_HINT
+                logging.warning("MinerU requested but not available.\n%s", _INSTALL_HINT)
         self.manifest = Manifest(self.cache_dir)
+        self._batch_mode = False  # P4: suppresses per-file saves during convert_all
 
     # -- discovery -----------------------------------------------------
 
@@ -84,13 +99,32 @@ class Engine:
     def _expand_zip(self, zip_path: Path) -> list[Path]:
         dest = self.cache_dir / "unzipped" / zip_path.stem
         dest.mkdir(parents=True, exist_ok=True)
+
+        # P5: skip re-extraction when zip content is unchanged
+        marker = dest / ".extracted"
+        try:
+            zip_hash = hash_file(zip_path)
+        except OSError:
+            zip_hash = None
+
+        if zip_hash and marker.exists() and marker.read_text().strip() == zip_hash:
+            return [
+                p for p in dest.rglob("*")
+                if p.is_file() and p != marker and p.suffix.lower() in _SUPPORTED
+            ]
+
         try:
             with zipfile.ZipFile(zip_path) as zf:
                 zf.extractall(dest)
+            if zip_hash:
+                marker.write_text(zip_hash)
         except Exception as exc:
             logging.warning("Could not extract %s: %s: %s", zip_path, type(exc).__name__, exc)
             return []
-        return [p for p in dest.rglob("*") if p.is_file() and p.suffix.lower() in _SUPPORTED]
+        return [
+            p for p in dest.rglob("*")
+            if p.is_file() and p != marker and p.suffix.lower() in _SUPPORTED
+        ]
 
     def pending(self) -> list[Path]:
         """Files that (re)need conversion — hash-delta aware."""
@@ -133,37 +167,83 @@ class Engine:
         img_dir = self.cache_dir / "images" / file_hash
         img_dir.mkdir(parents=True, exist_ok=True)
         for page in pages:
-            img_path = img_dir / f"page-{page:03d}.png"
-            if img_path.exists():
+            img_path = img_dir / f"page-{page:03d}.jpg"
+            if img_path.exists() and self._image_within_dim_cap(img_path):
                 out.append(str(img_path))
                 continue
-            imgs = render_pdf_pages(str(path), first=page, last=page, dpi=200)
+            # P7: use vision_dpi (default 150) — ~30% fewer tokens vs 200
+            imgs = render_pdf_pages(str(path), first=page, last=page, dpi=self.vision_dpi)
             if imgs:
                 try:
-                    imgs[0].save(img_path, "PNG")
+                    self._save_vision_image(imgs[0], img_path)
                     out.append(str(img_path))
                 except Exception:
                     pass
         return out
 
+    def _image_within_dim_cap(self, img_path: Path) -> bool:
+        """True if the cached image fits within max_image_dim — avoids re-render."""
+        try:
+            from PIL import Image
+            img = Image.open(img_path)
+            return max(img.width, img.height) <= self.max_image_dim
+        except Exception:
+            return True  # can't read → assume ok, let the caller handle the error
+
+    def _save_vision_image(self, img: "Image.Image", dest: Path) -> None:  # type: ignore[name-defined]
+        """Resize if needed, then save as JPEG (smaller than PNG for typical slide/photo content)."""
+        from PIL import Image
+        if max(img.width, img.height) > self.max_image_dim:
+            scale = self.max_image_dim / max(img.width, img.height)
+            img = img.resize(
+                (int(img.width * scale), int(img.height * scale)),
+                Image.LANCZOS,
+            )
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        img.save(dest, "JPEG", quality=85, optimize=True)
+
     # -- conversion ----------------------------------------------------
 
-    def convert_one(self, path: str | Path) -> ConvertReport:
+    def convert_one(
+        self,
+        path: str | Path,
+        *,
+        file_hash: str | None = None,  # P2: accept precomputed hash to avoid double-read
+    ) -> ConvertReport:
         path = Path(path)
         report = ConvertReport(path=str(path))
 
+        # P3: stat the file once for mtime+size tracking and fast-path
+        mtime: float = 0.0
+        size: int = 0
         try:
-            file_hash = hash_file(path)
-        except OSError as exc:
-            report.warnings.append(f"unreadable: {exc}")
-            return report
+            st = path.stat()
+            mtime, size = st.st_mtime, st.st_size
+        except OSError:
+            pass
+
+        # P2: compute hash once; caller may supply precomputed value
+        if file_hash is None:
+            try:
+                file_hash = hash_file(path)
+            except OSError as exc:
+                report.warnings.append(f"unreadable: {exc}")
+                return report
 
         unchanged, rec = self.manifest.is_current(str(path), file_hash)
         if unchanged and rec and not rec.needs_llm and not self.parser:
-            report.skipped = True
-            report.source = rec.source
-            report.parser = rec.parser
-            return report
+            # Re-process PDFs whose page analysis predates raster-image detection (v2).
+            # Extraction cache is reused; only the vision-routing heuristic re-runs.
+            needs_reanalysis = (
+                path.suffix.lower() == ".pdf"
+                and self.manifest.get_page_analysis(file_hash) is None
+            )
+            if not needs_reanalysis:
+                report.skipped = True
+                report.source = rec.source
+                report.parser = rec.parser
+                return report
 
         result = self._extract(path, file_hash)
         report.parser = result.parser
@@ -171,7 +251,8 @@ class Engine:
 
         if not result.ok:
             report.warnings.append("extraction yielded no text")
-            self._record(path, file_hash, result, detection=None, source=None, items=[], failed=True)
+            self._record(path, file_hash, result, detection=None, source=None, items=[],
+                         failed=True, mtime=mtime, size=size)
             return report
 
         opt_result = optimise_with_tokens(result.text)
@@ -206,6 +287,20 @@ class Engine:
 
         # PDF pages flagged as figure-like → render & route to vision. Unique id per page.
         vision_pages = result.meta.get("vision_pages") or []
+        # P1: if no vision_pages from parser, use pdfplumber graphic-density heuristic
+        # — but cache the result so re-runs of needs_llm files skip the full PDF scan.
+        if not vision_pages and path.suffix.lower() == ".pdf":
+            cached_pages = self.manifest.get_page_analysis(file_hash)
+            if cached_pages is None:
+                cached_pages = graphic_dense_pages(str(path))
+                if not cached_pages:
+                    # Fallback for raster-only PDFs (screenshots, WhatsApp, scanned slides):
+                    # zero vector elements fool graphic_dense_pages, but pdfplumber can
+                    # enumerate the embedded raster images and measure their coverage.
+                    cached_pages = image_dominant_pages(str(path))
+                self.manifest.set_page_analysis(file_hash, cached_pages)
+            vision_pages = cached_pages
+
         rendered_pages = self._render_vision_pages(path, file_hash, vision_pages)
         if vision_pages and not rendered_pages:
             # Don't silently drop a figure the parser asked us to look at.
@@ -271,13 +366,15 @@ class Engine:
 
         self._record(path, file_hash, result, detection=detection,
                      source=str(source_path), items=order, failed=False,
-                     tokens_raw=tokens_raw, tokens_optimised=tokens_optimised)
+                     tokens_raw=tokens_raw, tokens_optimised=tokens_optimised,
+                     mtime=mtime, size=size)
         return report
 
     def _record(self, path: Path, file_hash: str, result: ExtractionResult,
                 *, detection: Optional[DiagramDetection], source: Optional[str],
                 items: list[dict], failed: bool = False,
-                tokens_raw: int = 0, tokens_optimised: int = 0) -> None:
+                tokens_raw: int = 0, tokens_optimised: int = 0,
+                mtime: float = 0.0, size: int = 0) -> None:
         complexity = detection.complexity if detection is not None else "none"
         self.manifest.upsert(FileRecord(
             original=str(path.resolve()),
@@ -291,11 +388,58 @@ class Engine:
             failed=failed,
             tokens_raw=tokens_raw,
             tokens_optimised=tokens_optimised,
+            mtime=mtime,
+            size=size,
         ))
-        self.manifest.save()
+        # P4: skip per-file save in batch mode; convert_all saves once at end
+        if not self._batch_mode:
+            self.manifest.save()
 
-    def convert_all(self) -> list[ConvertReport]:
-        return [self.convert_one(p) for p in self._iter_files()]
+    def convert_all(self, *, workers: int = 4) -> list[ConvertReport]:
+        """Convert all files in raw_dir.
+
+        P4: saves manifest once after all files (not N times).
+        P6: parallelises extraction across files with a bounded thread pool.
+        """
+        files = self._iter_files()
+        if not files:
+            return []
+
+        self._batch_mode = True
+        ordered: list[Optional[ConvertReport]] = [None] * len(files)
+        try:
+            if workers > 1 and len(files) > 1:
+                # P6: parallel extraction — I/O-bound, threads work under GIL
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    # P2: precompute hashes in the pool too (avoids serial hash pass)
+                    future_to_idx = {
+                        pool.submit(self._convert_one_with_hash, p): i
+                        for i, p in enumerate(files)
+                    }
+                    for fut in as_completed(future_to_idx):
+                        idx = future_to_idx[fut]
+                        try:
+                            ordered[idx] = fut.result()
+                        except Exception as exc:
+                            ordered[idx] = ConvertReport(
+                                path=str(files[idx]), warnings=[str(exc)]
+                            )
+            else:
+                for i, p in enumerate(files):
+                    ordered[i] = self._convert_one_with_hash(p)
+        finally:
+            self._batch_mode = False
+            self.manifest.save()  # P4: single save for the entire batch
+
+        return [r for r in ordered if r is not None]
+
+    def _convert_one_with_hash(self, path: Path) -> ConvertReport:
+        """P2: hash the file once here, pass into convert_one to avoid re-read."""
+        try:
+            fh = hash_file(path)
+        except OSError:
+            fh = None
+        return self.convert_one(path, file_hash=fh)
 
     # -- finance verification ------------------------------------------
 

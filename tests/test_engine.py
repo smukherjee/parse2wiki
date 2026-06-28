@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 # Ensure the in-repo package is importable without installing.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -675,3 +677,762 @@ def test_pymupdf4llm_emits_vision_pages_for_picture():
             sys.modules["pymupdf4llm"] = orig
         else:
             sys.modules.pop("pymupdf4llm", None)
+
+
+# -- graphic_dense_pages: visual diagram detection via pdfplumber ----------
+
+def _fake_plumber_with_pages(pages_spec: list[dict]):
+    """Build a fake pdfplumber module whose PDF has one page per spec dict.
+
+    Each spec may contain: rects (list of dicts), lines (list), curves (list).
+    """
+    import sys, types
+
+    fake = types.ModuleType("pdfplumber")
+
+    class _FakePage:
+        def __init__(self, spec):
+            self.rects = spec.get("rects", [])
+            self.lines = spec.get("lines", [])
+            self.curves = spec.get("curves", [])
+
+    class _FakePDF:
+        def __init__(self, specs):
+            self.pages = [_FakePage(s) for s in specs]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    fake.open = lambda source: _FakePDF(pages_spec)
+    return fake
+
+
+def _with_fake_plumber(pages_spec, fn):
+    import sys
+
+    fake = _fake_plumber_with_pages(pages_spec)
+    orig = sys.modules.get("pdfplumber")
+    sys.modules["pdfplumber"] = fake
+    try:
+        return fn()
+    finally:
+        if orig is not None:
+            sys.modules["pdfplumber"] = orig
+        else:
+            sys.modules.pop("pdfplumber", None)
+
+
+def _rect(w, h):
+    return {"width": w, "height": h}
+
+
+def test_graphic_dense_pages_flags_diagram_page():
+    """A page with 6 big rects + 12 lines is flagged as a figure page."""
+    from doc2md.figures import graphic_dense_pages
+
+    spec = [{"rects": [_rect(100, 80)] * 6, "lines": [{}] * 12, "curves": []}]
+    result = _with_fake_plumber(spec, lambda: graphic_dense_pages("any.pdf"))
+    assert result == [1]
+
+
+def test_graphic_dense_pages_ignores_sparse_graphics():
+    """A page with only 2 rects and 5 lines is below both thresholds → not flagged."""
+    from doc2md.figures import graphic_dense_pages
+
+    spec = [{"rects": [_rect(100, 80)] * 2, "lines": [{}] * 5, "curves": []}]
+    result = _with_fake_plumber(spec, lambda: graphic_dense_pages("any.pdf"))
+    assert result == []
+
+
+def test_graphic_dense_pages_ignores_tiny_rects():
+    """Rects below min area (hairlines/borders) don't count toward the rect threshold."""
+    from doc2md.figures import graphic_dense_pages
+
+    # 10 tiny rects (5×5 = 25 pts² < 400) + 20 lines; big_rects=0 → not flagged
+    spec = [{"rects": [_rect(5, 5)] * 10, "lines": [{}] * 20, "curves": []}]
+    result = _with_fake_plumber(spec, lambda: graphic_dense_pages("any.pdf"))
+    assert result == []
+
+
+def test_graphic_dense_pages_returns_empty_without_pdfplumber():
+    """If pdfplumber is not installed, graphic_dense_pages returns [] silently."""
+    import sys
+    from doc2md.figures import graphic_dense_pages
+
+    orig = sys.modules.get("pdfplumber")
+    sys.modules.pop("pdfplumber", None)
+    try:
+        result = graphic_dense_pages("any.pdf")
+        assert result == []
+    finally:
+        if orig is not None:
+            sys.modules["pdfplumber"] = orig
+
+
+def test_graphic_dense_pages_multi_page_selective():
+    """Only pages meeting both thresholds are returned; text-only pages are skipped."""
+    from doc2md.figures import graphic_dense_pages
+
+    spec = [
+        {"rects": [_rect(100, 80)] * 6, "lines": [{}] * 12, "curves": []},  # p1: diagram
+        {"rects": [], "lines": [], "curves": []},                              # p2: text-only
+        {"rects": [_rect(100, 80)] * 8, "lines": [{}] * 10, "curves": [{}] * 3},  # p3: diagram
+    ]
+    result = _with_fake_plumber(spec, lambda: graphic_dense_pages("any.pdf"))
+    assert result == [1, 3]
+
+
+def test_engine_graphic_dense_creates_vision_work_items(tmp_path):
+    """Engine must create infographic work items for graphic-dense pages when the
+    primary parser sets no vision_pages and pdfplumber detects figure-heavy pages."""
+    import sys, types
+    from unittest.mock import patch, MagicMock
+    from doc2md.engine import Engine
+    from doc2md.parsers.base import ExtractionResult
+    from doc2md.parsers.registry import ExtractorRegistry
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    # Must be .pdf so the graphic-dense fallback fires
+    pdf_file = raw / "workflow.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+
+    class _FakePDFParser:
+        name = "fakepdf"
+        kinds = ("file",)
+        extensions = (".pdf",)
+
+        @property
+        def available(self):
+            return True
+
+        def supports(self, source):
+            return Path(source).suffix.lower() == ".pdf"
+
+        def extract(self, source, *, ocr=False):
+            # Returns text with no vision_pages — simulates pdf-inspector behaviour
+            return ExtractionResult(
+                text="BAGERA Global View workflow component node",
+                parser=self.name,
+            )
+
+    reg = ExtractorRegistry([_FakePDFParser()], chains={".pdf": ["fakepdf"]})
+    eng = Engine(raw, tmp_path / "sources", tmp_path / "cache", registry=reg, ocr=False)
+
+    # Patch graphic_dense_pages in engine's namespace to return page 1
+    # and patch _render_vision_pages to avoid needing pdf2image
+    with patch("doc2md.engine.graphic_dense_pages", return_value=[1]):
+        with patch.object(eng, "_render_vision_pages", return_value=[str(tmp_path / "p001.png")]):
+            (tmp_path / "p001.png").write_bytes(b"fakepng")
+            report = eng.convert_one(pdf_file)
+
+    assert report.needs_llm, "Engine should have created a vision work item"
+    kinds = [i["kind"] for i in report.items]
+    assert "infographic" in kinds, f"Expected infographic work item, got: {kinds}"
+
+
+# -- P1: graphic_dense_pages cached in manifest -------------------------
+
+def test_page_analysis_cached_avoids_rerun(tmp_path):
+    """graphic_dense_pages must not be called twice for a needs_llm file on rerun."""
+    from unittest.mock import patch
+    from doc2md.engine import Engine
+    from doc2md.parsers.base import ExtractionResult
+    from doc2md.parsers.registry import ExtractorRegistry
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pdf_file = raw / "workflow.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+
+    class _FakePDF:
+        name = "fakepdf"
+        kinds = ("file",)
+        extensions = (".pdf",)
+
+        @property
+        def available(self):
+            return True
+
+        def supports(self, source):
+            return Path(source).suffix.lower() == ".pdf"
+
+        def extract(self, source, *, ocr=False):
+            return ExtractionResult(text="workflow diagram node", parser=self.name)
+
+    reg = ExtractorRegistry([_FakePDF()], chains={".pdf": ["fakepdf"]})
+    eng = Engine(raw, tmp_path / "sources", tmp_path / "cache", registry=reg, ocr=False)
+
+    call_count = {"n": 0}
+    original_dense = __import__("doc2md.figures", fromlist=["graphic_dense_pages"]).graphic_dense_pages
+
+    def counting_dense(source, **kw):
+        call_count["n"] += 1
+        return [1]
+
+    with patch("doc2md.engine.graphic_dense_pages", side_effect=counting_dense):
+        with patch.object(eng, "_render_vision_pages", return_value=[str(tmp_path / "p.png")]):
+            (tmp_path / "p.png").write_bytes(b"fake")
+            r1 = eng.convert_one(pdf_file)
+            assert r1.needs_llm
+            assert call_count["n"] == 1, "first run should call graphic_dense_pages"
+
+            # Second run: needs_llm is still True, but page_analysis is now cached
+            r2 = eng.convert_one(pdf_file)
+            assert call_count["n"] == 1, "second run must NOT call graphic_dense_pages again"
+
+
+# -- P2: hash computed once per file ------------------------------------
+
+def test_convert_one_accepts_precomputed_hash(tmp_path):
+    """convert_one with a precomputed file_hash must not re-read the file."""
+    from doc2md.engine import Engine
+    from doc2md.manifest import hash_file
+    from doc2md.parsers.base import ExtractionResult
+    from doc2md.parsers.registry import ExtractorRegistry
+    from unittest.mock import patch
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    f = raw / "a.md"
+    f.write_text("hello world")
+
+    class _P:
+        name = "fake"
+        kinds = ("file",)
+        extensions = (".md",)
+
+        @property
+        def available(self):
+            return True
+
+        def supports(self, s):
+            return Path(s).suffix.lower() == ".md"
+
+        def extract(self, s, *, ocr=False):
+            return ExtractionResult(text="hello world", parser=self.name)
+
+    reg = ExtractorRegistry([_P()], chains={".md": ["fake"]})
+    eng = Engine(raw, tmp_path / "sources", tmp_path / "cache", registry=reg, ocr=False)
+
+    precomputed = hash_file(f)
+    hash_calls = {"n": 0}
+    original_hash = hash_file.__wrapped__ if hasattr(hash_file, "__wrapped__") else None
+
+    with patch("doc2md.engine.hash_file", wraps=lambda p, **kw: (__import__("doc2md.manifest", fromlist=["hash_file"]).hash_file(p, **kw))) as mock_hash:
+        eng.convert_one(f, file_hash=precomputed)
+        # hash_file must not be called inside convert_one when precomputed hash supplied
+        assert mock_hash.call_count == 0, "hash_file called despite precomputed hash"
+
+
+# -- P3: mtime+size fast-path ------------------------------------------
+
+def test_mtime_fastpath_skips_hash_read(tmp_path):
+    """has_unchanged returns True via mtime+size without reading file bytes."""
+    from doc2md.manifest import Manifest, FileRecord, hash_file
+    from unittest.mock import patch
+
+    cache = tmp_path / "cache"
+    m = Manifest(cache)
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"content")
+
+    fh = hash_file(f)
+    st = f.stat()
+    m.upsert(FileRecord(
+        original=str(f.resolve()), hash=fh, parser="fake",
+        source=str(f), mtime=st.st_mtime, size=st.st_size,
+    ))
+    m.save()
+
+    hash_calls = {"n": 0}
+    original = hash_file
+
+    def counting_hash(path, **kw):
+        hash_calls["n"] += 1
+        return original(path, **kw)
+
+    with patch("doc2md.manifest.hash_file", side_effect=counting_hash):
+        unchanged, rec = m.has_unchanged(str(f))
+
+    assert unchanged is True
+    assert hash_calls["n"] == 0, "hash_file must not be called when mtime+size match"
+
+
+def test_mtime_changed_falls_back_to_hash(tmp_path):
+    """If mtime differs, has_unchanged falls back to full hash comparison."""
+    from doc2md.manifest import Manifest, FileRecord, hash_file
+    import time
+
+    cache = tmp_path / "cache"
+    m = Manifest(cache)
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"content")
+
+    fh = hash_file(f)
+    # Record a stale mtime (file appears modified)
+    m.upsert(FileRecord(
+        original=str(f.resolve()), hash=fh, parser="fake",
+        source=str(f), mtime=0.0, size=f.stat().st_size,
+    ))
+    m.save()
+
+    # Reload so we test a fresh instance
+    m2 = Manifest(cache)
+    unchanged, _ = m2.has_unchanged(str(f))
+    # Hash is same, so should still be unchanged even though mtime was 0
+    assert unchanged is True
+
+
+# -- P4: batch save once ------------------------------------------------
+
+def test_convert_all_saves_manifest_once(tmp_path):
+    """convert_all must call manifest.save() once, not once per file."""
+    from unittest.mock import patch
+    from doc2md.engine import Engine
+    from doc2md.parsers.base import ExtractionResult
+    from doc2md.parsers.registry import ExtractorRegistry
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    for i in range(3):
+        (raw / f"file{i}.md").write_text(f"content {i}")
+
+    class _P:
+        name = "fake"
+        kinds = ("file",)
+        extensions = (".md",)
+
+        @property
+        def available(self):
+            return True
+
+        def supports(self, s):
+            return Path(s).suffix.lower() == ".md"
+
+        def extract(self, s, *, ocr=False):
+            return ExtractionResult(text=open(s).read(), parser=self.name)
+
+    reg = ExtractorRegistry([_P()], chains={".md": ["fake"]})
+    eng = Engine(raw, tmp_path / "sources", tmp_path / "cache", registry=reg, ocr=False)
+
+    save_calls = {"n": 0}
+    original_save = eng.manifest.save
+
+    def counting_save():
+        save_calls["n"] += 1
+        original_save()
+
+    eng.manifest.save = counting_save
+    eng.convert_all(workers=1)
+
+    assert save_calls["n"] == 1, f"Expected 1 save, got {save_calls['n']}"
+
+
+# -- P5: zip not re-extracted when unchanged ----------------------------
+
+def test_zip_not_re_extracted_when_unchanged(tmp_path):
+    """_expand_zip must not call extractall a second time for an unchanged zip."""
+    import zipfile as zf_mod
+    from unittest.mock import patch, MagicMock
+    from doc2md.engine import Engine
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+
+    # Create a real zip with one txt file
+    zip_path = raw / "docs.zip"
+    with zf_mod.ZipFile(zip_path, "w") as zf:
+        zf.writestr("a.txt", "hello")
+
+    eng = Engine(raw, tmp_path / "sources", tmp_path / "cache", ocr=False)
+
+    extract_calls = {"n": 0}
+    original_extractall = zf_mod.ZipFile.extractall
+
+    def counting_extractall(self, *args, **kwargs):
+        extract_calls["n"] += 1
+        return original_extractall(self, *args, **kwargs)
+
+    with patch.object(zf_mod.ZipFile, "extractall", counting_extractall):
+        eng._expand_zip(zip_path)  # first call — should extract
+        eng._expand_zip(zip_path)  # second call — zip unchanged, must skip
+
+    assert extract_calls["n"] == 1, f"extractall called {extract_calls['n']} times; expected 1"
+
+
+# -- P6: parallel convert_all ------------------------------------------
+
+def test_convert_all_parallel_returns_all_results(tmp_path):
+    """convert_all with workers>1 must return one result per input file, in order."""
+    from doc2md.engine import Engine
+    from doc2md.parsers.base import ExtractionResult
+    from doc2md.parsers.registry import ExtractorRegistry
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    names = [f"doc{i}.md" for i in range(5)]
+    for name in names:
+        (raw / name).write_text(f"content of {name}")
+
+    class _P:
+        name = "fake"
+        kinds = ("file",)
+        extensions = (".md",)
+
+        @property
+        def available(self):
+            return True
+
+        def supports(self, s):
+            return Path(s).suffix.lower() == ".md"
+
+        def extract(self, s, *, ocr=False):
+            return ExtractionResult(text=open(s).read(), parser=self.name)
+
+    reg = ExtractorRegistry([_P()], chains={".md": ["fake"]})
+    eng = Engine(raw, tmp_path / "sources", tmp_path / "cache", registry=reg, ocr=False)
+    results = eng.convert_all(workers=4)
+
+    assert len(results) == 5
+    sources = {Path(r.source).name for r in results if r.source}
+    assert len(sources) == 5  # all distinct, no collisions
+
+
+# -- P7: vision_dpi passed to render ------------------------------------
+
+def test_engine_vision_dpi_passed_to_render(tmp_path):
+    """Engine must pass vision_dpi to render_pdf_pages, not a hardcoded value."""
+    from unittest.mock import patch
+    from doc2md.engine import Engine
+    from doc2md.parsers.base import ExtractionResult
+    from doc2md.parsers.registry import ExtractorRegistry
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pdf_file = raw / "chart.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+
+    class _FakePDF:
+        name = "fakepdf"
+        kinds = ("file",)
+        extensions = (".pdf",)
+
+        @property
+        def available(self):
+            return True
+
+        def supports(self, s):
+            return Path(s).suffix.lower() == ".pdf"
+
+        def extract(self, s, *, ocr=False):
+            return ExtractionResult(text="diagram node", parser=self.name)
+
+    reg = ExtractorRegistry([_FakePDF()], chains={".pdf": ["fakepdf"]})
+    eng = Engine(raw, tmp_path / "sources", tmp_path / "cache",
+                 registry=reg, ocr=False, vision_dpi=72)
+
+    render_calls = []
+
+    def fake_render(path, *, first, last, dpi):
+        render_calls.append(dpi)
+        return []  # no images — keeps test simple
+
+    with patch("doc2md.engine.graphic_dense_pages", return_value=[1]):
+        with patch("doc2md.engine.render_pdf_pages", side_effect=fake_render):
+            eng.convert_one(pdf_file)
+
+    assert render_calls, "render_pdf_pages was never called"
+    assert all(d == 72 for d in render_calls), f"Expected dpi=72, got {render_calls}"
+
+
+def test_engine_vision_dpi_default_is_150(tmp_path):
+    """Default vision_dpi must be 150, not the old 200/300."""
+    from doc2md.engine import Engine
+
+    eng = Engine(tmp_path / "raw", tmp_path / "sources", tmp_path / "cache", ocr=False)
+    assert eng.vision_dpi == 150
+
+
+# -- image_dominant_pages: raster-PDF fallback detection -----------------
+
+
+def _fake_plumber_with_images(pages_spec: list[dict]):
+    """Build a fake pdfplumber module for image_dominant_pages testing.
+
+    Each spec: width (float), height (float), images (list of dicts with
+    x0, x1, top, bottom keys matching pdfplumber's coordinate system).
+    """
+    import sys
+    import types
+
+    fake = types.ModuleType("pdfplumber")
+
+    class _FakePage:
+        def __init__(self, spec):
+            self.width = spec.get("width", 100.0)
+            self.height = spec.get("height", 100.0)
+            self.images = spec.get("images", [])
+
+    class _FakePDF:
+        def __init__(self, specs):
+            self.pages = [_FakePage(s) for s in specs]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    fake.open = lambda source: _FakePDF(pages_spec)
+    return fake
+
+
+def _with_fake_plumber_images(pages_spec, fn):
+    import sys
+
+    fake = _fake_plumber_with_images(pages_spec)
+    orig = sys.modules.get("pdfplumber")
+    sys.modules["pdfplumber"] = fake
+    try:
+        return fn()
+    finally:
+        if orig is not None:
+            sys.modules["pdfplumber"] = orig
+        else:
+            sys.modules.pop("pdfplumber", None)
+
+
+def test_image_dominant_pages_flags_raster_page():
+    """A page whose embedded image covers 90% of the area is flagged for vision."""
+    from doc2md.figures import image_dominant_pages
+
+    # 100×100 pt page; one 95×95 image = 90.25% coverage → above 40% threshold
+    spec = [{"width": 100.0, "height": 100.0,
+             "images": [{"x0": 0, "x1": 95, "top": 0, "bottom": 95}]}]
+    result = _with_fake_plumber_images(spec, lambda: image_dominant_pages("any.pdf"))
+    assert result == [1]
+
+
+def test_image_dominant_pages_ignores_small_images():
+    """A decorative image covering only 9% of the page does not trigger vision."""
+    from doc2md.figures import image_dominant_pages
+
+    # 100×100 pt page; one 30×30 image = 9% coverage → below 40% threshold
+    spec = [{"width": 100.0, "height": 100.0,
+             "images": [{"x0": 0, "x1": 30, "top": 0, "bottom": 30}]}]
+    result = _with_fake_plumber_images(spec, lambda: image_dominant_pages("any.pdf"))
+    assert result == []
+
+
+def test_image_dominant_pages_multi_page_selective():
+    """Only raster-heavy pages are returned; text-only pages are skipped."""
+    from doc2md.figures import image_dominant_pages
+
+    spec = [
+        # p1: full-page slide screenshot (100% coverage)
+        {"width": 100.0, "height": 100.0,
+         "images": [{"x0": 0, "x1": 100, "top": 0, "bottom": 100}]},
+        # p2: no images at all
+        {"width": 100.0, "height": 100.0, "images": []},
+        # p3: half-page chart (50% coverage)
+        {"width": 100.0, "height": 100.0,
+         "images": [{"x0": 0, "x1": 100, "top": 0, "bottom": 50}]},
+    ]
+    result = _with_fake_plumber_images(spec, lambda: image_dominant_pages("any.pdf"))
+    assert result == [1, 3]
+
+
+def test_image_dominant_pages_returns_empty_without_pdfplumber():
+    """If pdfplumber is unavailable, image_dominant_pages returns [] silently."""
+    import sys
+    from doc2md.figures import image_dominant_pages
+
+    orig = sys.modules.get("pdfplumber")
+    sys.modules.pop("pdfplumber", None)
+    try:
+        result = image_dominant_pages("any.pdf")
+        assert result == []
+    finally:
+        if orig is not None:
+            sys.modules["pdfplumber"] = orig
+
+
+def test_save_vision_image_resizes_oversized(tmp_path):
+    """_save_vision_image must downscale images that exceed max_image_dim."""
+    Image = pytest.importorskip("PIL.Image")
+    from doc2md.engine import Engine
+
+    eng = Engine(tmp_path / "raw", tmp_path / "sources", tmp_path / "cache",
+                 ocr=False, max_image_dim=200)
+    big = Image.new("RGB", (600, 400), color=(128, 128, 128))
+    dest = tmp_path / "out.jpg"
+    eng._save_vision_image(big, dest)
+
+    result = Image.open(dest)
+    assert max(result.width, result.height) <= 200, (
+        f"Expected ≤200px, got {result.width}x{result.height}"
+    )
+    assert abs(result.width / result.height - 600 / 400) < 0.05
+
+
+def test_save_vision_image_leaves_small_image_unchanged(tmp_path):
+    """_save_vision_image must not upscale images that are already within the cap."""
+    Image = pytest.importorskip("PIL.Image")
+    from doc2md.engine import Engine
+
+    eng = Engine(tmp_path / "raw", tmp_path / "sources", tmp_path / "cache",
+                 ocr=False, max_image_dim=1568)
+    small = Image.new("RGB", (800, 600), color=(0, 0, 255))
+    dest = tmp_path / "out.jpg"
+    eng._save_vision_image(small, dest)
+
+    result = Image.open(dest)
+    assert result.size == (800, 600), f"Size changed unexpectedly: {result.size}"
+
+
+def test_render_vision_pages_heals_oversized_cache(tmp_path):
+    """Cached images that exceed max_image_dim are re-rendered, not reused."""
+    Image = pytest.importorskip("PIL.Image")
+    from unittest.mock import patch
+    from doc2md.engine import Engine
+    from doc2md.parsers.base import ExtractionResult
+    from doc2md.parsers.registry import ExtractorRegistry
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+
+    class _Dummy:
+        name = "fake"
+        kinds = ("file",)
+        extensions = (".pdf",)
+
+        @property
+        def available(self):
+            return True
+
+        def supports(self, s):
+            return True
+
+        def extract(self, s, *, ocr=False):
+            return ExtractionResult(text="x", parser=self.name)
+
+    eng = Engine(raw, tmp_path / "sources", tmp_path / "cache",
+                 registry=ExtractorRegistry([_Dummy()], chains={}),
+                 ocr=False, max_image_dim=200)
+
+    img_dir = tmp_path / "cache" / "images" / "testhash"
+    img_dir.mkdir(parents=True)
+    img_path = img_dir / "page-001.jpg"
+    Image.new("RGB", (800, 600)).save(img_path, "JPEG")
+
+    replacement = Image.new("RGB", (400, 300), color=(255, 0, 0))
+    render_calls = []
+
+    def fake_render(path, *, first, last, dpi):
+        render_calls.append(first)
+        return [replacement]
+
+    with patch("doc2md.engine.render_pdf_pages", side_effect=fake_render):
+        result = eng._render_vision_pages(
+            Path(raw / "x.pdf"), "testhash", [1]
+        )
+
+    assert render_calls == [1], "Should have re-rendered the oversized cached image"
+    assert result
+    final = Image.open(result[0])
+    assert max(final.width, final.height) <= 200, f"Still oversized: {final.size}"
+
+
+def test_engine_uses_image_dominant_when_no_vector_graphics(tmp_path):
+    """When graphic_dense_pages returns [], image_dominant_pages fires as fallback.
+
+    This is the WhatsApp screenshot PDF scenario: the PDF contains raster slides
+    with zero vector elements, so the vector heuristic misses them entirely.
+    """
+    from unittest.mock import patch
+    from doc2md.engine import Engine
+    from doc2md.parsers.base import ExtractionResult
+    from doc2md.parsers.registry import ExtractorRegistry
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pdf_file = raw / "screenshot.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+
+    class _FakePDFParser:
+        name = "fakepdf"
+        kinds = ("file",)
+        extensions = (".pdf",)
+
+        @property
+        def available(self):
+            return True
+
+        def supports(self, source):
+            return Path(source).suffix.lower() == ".pdf"
+
+        def extract(self, source, *, ocr=False):
+            # Partial text layer extracted from image-PDF — looks valid but incomplete
+            return ExtractionResult(
+                text="Airport passenger processing timeline architecture overview",
+                parser=self.name,
+            )
+
+    reg = ExtractorRegistry([_FakePDFParser()], chains={".pdf": ["fakepdf"]})
+    eng = Engine(raw, tmp_path / "sources", tmp_path / "cache", registry=reg, ocr=False)
+
+    with patch("doc2md.engine.graphic_dense_pages", return_value=[]):
+        with patch("doc2md.engine.image_dominant_pages", return_value=[1]) as mock_idp:
+            with patch.object(eng, "_render_vision_pages",
+                              return_value=[str(tmp_path / "p.png")]):
+                (tmp_path / "p.png").write_bytes(b"fakepng")
+                report = eng.convert_one(pdf_file)
+
+    mock_idp.assert_called_once()
+    assert report.needs_llm, "Should have created a vision work item for the raster page"
+    kinds = [i["kind"] for i in report.items]
+    assert "infographic" in kinds, f"Expected infographic item, got: {kinds}"
+
+
+def test_engine_image_dominant_not_called_when_vector_present(tmp_path):
+    """When graphic_dense_pages already returns pages, image_dominant_pages is skipped."""
+    from unittest.mock import patch
+    from doc2md.engine import Engine
+    from doc2md.parsers.base import ExtractionResult
+    from doc2md.parsers.registry import ExtractorRegistry
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pdf_file = raw / "workflow.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+
+    class _FakePDFParser:
+        name = "fakepdf"
+        kinds = ("file",)
+        extensions = (".pdf",)
+
+        @property
+        def available(self):
+            return True
+
+        def supports(self, source):
+            return Path(source).suffix.lower() == ".pdf"
+
+        def extract(self, source, *, ocr=False):
+            return ExtractionResult(text="workflow node diagram", parser=self.name)
+
+    reg = ExtractorRegistry([_FakePDFParser()], chains={".pdf": ["fakepdf"]})
+    eng = Engine(raw, tmp_path / "sources", tmp_path / "cache", registry=reg, ocr=False)
+
+    with patch("doc2md.engine.graphic_dense_pages", return_value=[1]):
+        with patch("doc2md.engine.image_dominant_pages") as mock_idp:
+            with patch.object(eng, "_render_vision_pages",
+                              return_value=[str(tmp_path / "p.png")]):
+                (tmp_path / "p.png").write_bytes(b"fakepng")
+                eng.convert_one(pdf_file)
+
+    mock_idp.assert_not_called()

@@ -14,7 +14,7 @@ from typing import Iterable
 from .base import ExtractionResult, Parser
 
 _DEFAULT_CHAINS: dict[str, list[str]] = {
-    ".pdf": ["pdf-inspector", "unpdf", "pdf-multilingual", "pymupdf4llm", "pdfplumber", "pdftotext"],
+    ".pdf": ["pdf-inspector", "unpdf", "pdf-multilingual", "pymupdf4llm", "pdfplumber", "pdftotext", "mineru"],
     ".docx": ["undoc", "markitdown", "docx", "pandoc"],
     ".pptx": ["undoc", "markitdown", "pptx"],
     ".xlsx": ["undoc", "markitdown", "xlsx"],

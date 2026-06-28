@@ -11,9 +11,19 @@ OCR, token optimisation, caching, writing). **Your only jobs are the things
 deterministic code cannot do:**
 
 1. Render **complex text diagrams** → Mermaid (simple ones are already done).
-2. Interpret **infographics / diagram images** → markdown + Mermaid, using your **vision**.
+2. Interpret **infographic / diagram images** → markdown + Mermaid via your vision.
 
 You never call an `anthropic` SDK and never need an `ANTHROPIC_KEY` — you *are* Claude.
+
+## AUTO MODE (default) — complete all steps without pausing
+
+**Do not ask the user questions. Do not pause between steps. Do not summarise
+mid-run. Execute steps 1–4 in sequence and only speak at the very end.**
+
+The only exception: `/doc2md --prompt` inverts to interactive mode — pause after
+each step and confirm before proceeding.
+
+---
 
 ## When to use
 
@@ -22,146 +32,137 @@ Run `/doc2md` for either of these — they are the **same command**:
 - **Fresh wiki:** drop all source documents into `raw/`, run `/doc2md`.
 - **New sources:** drop the new documents into `raw/`, run `/doc2md` (unchanged files are skipped via content-hash delta).
 
-Output lands in `sources/` as one token-optimised markdown file per document — feed that directory to [llm_wiki](https://github.com/nashsu/llm_wiki).
+Output lands in `sources/` as one token-optimised markdown file per document.
 
-## Setup (once)
-
-Verify the engine and its parsers are available. Run, and report what's missing:
-
-```bash
-pip install -e ".[modern]"   # markitdown + pymupdf4llm are optional extras
-doc2md parsers                # list parsers and availability
-```
-
-System binaries some parsers wrap: `pdftotext` (poppler), `pandoc`, `tesseract` (OCR).
-Missing ones degrade gracefully to the next parser in the fallback chain — note any
-gaps to the user but do not block.
+---
 
 ## The run
 
-You orchestrate per-document. Work in the project root (where `raw/` lives).
+Work in the project root (where `raw/` lives). Execute steps 1–4 in order.
+**Never stop early. Never skip step 2 because step 1 reported `needs_llm`.**
 
-### 1. Convert (deterministic)
+### Step 1 — Convert (deterministic)
+
+Run `convert_all()` directly — no status checks, no `ls`, no manifest reads first:
 
 ```python
 from doc2md.engine import Engine
-eng = Engine("raw", "sources")          # zero-config defaults; ocr=True
+eng = Engine("raw", "sources")
 reports = eng.convert_all()
 ```
 
-Each `ConvertReport` tells you: `source` (the written markdown), `work_order`
-(path to a JSON list of items only you can do), `items`, `needs_llm`, `parser`,
-`skipped`, `warnings`. Print a short summary for the user (how many converted,
-how many skipped, how many need you, any warnings).
+Each `ConvertReport`: `source`, `work_order`, `items`, `needs_llm`, `parser`, `skipped`, `warnings`.
 
-If a report `needs_llm` is False, its source is **done** — nothing more to do for it.
+If every report has `needs_llm=False` and `skipped=False`, jump to Step 4.
 
-### 2. Fulfil the work-orders (your LLM work)
+### Step 2 — Fulfil work orders (your LLM work)
 
-For each report with `needs_llm`, load its work-order JSON. Each item is one of:
+**This step is mandatory when any report has `needs_llm=True`. Do not skip it.**
+
+For each report where `needs_llm` is True:
+
+Load its work-order items from `report.items` (already in memory — no file read needed).
+
+For each item:
 
 - **`kind: "complex_mermaid"`** — `text` holds the document text; render a compact
   Mermaid diagram (`diagram_type` suggests flowchart/sequence/state/er/class).
-  Supplement the text — do not replace it. Keep it tight; this is a token-optimised source.
-- **`kind: "infographic"`** — `image` is a path to a PNG (a standalone infographic or
-  a rendered PDF page). **Read the image with your vision** (use the Read tool on the
-  `image` path). Produce markdown describing the diagram **and** a Mermaid where the
-  image is genuinely a diagram (flowchart/architecture/sequence/etc.). Use the `text`
-  field (OCR labels) as a hint when present.
+  Supplement the text — do not replace it.
 
-For every Mermaid block you produce, **validate before returning it**:
+- **`kind: "infographic"`** — `image` is a path to a PNG. **Read the image with your
+  vision** (use the Read tool on the `image` path). Produce markdown describing the
+  diagram **and** a Mermaid block where the image is genuinely a diagram. Use the
+  `text` field (OCR labels) as a hint when present.
+
+For every Mermaid block, validate before returning:
 
 ```python
 from doc2md.mermaid_validate import clean_llm_mermaid
 src, reason = clean_llm_mermaid(raw_mermaid)
 ```
 
-If `src is None`, the Mermaid is invalid — fix and retry, or omit the Mermaid and keep
-only the markdown description. Never splice invalid Mermaid into a source.
+If `src is None`, fix and retry, or keep only the markdown. Never splice invalid Mermaid.
 
-You do **not** manage the cache yourself. The engine pre-fulfils each item from its
-work-cache during `convert_all` (so unchanged files and previously-fulfilled items never
-re-enter your work-order), and `apply_work` writes your output back to that cache. So a
-re-run spends zero LLM tokens automatically. Each work-order item carries a `file_hash`
-for traceability, but you only need the `id` to splice.
-
-### 3. Splice your results into the source
-
-Map each fulfilled item id → your markdown (which may contain a Mermaid fence), then:
+### Step 3 — Splice results
 
 ```python
-eng.apply_work(report.source, fulfilled)   # rewrites the source in place, clears needs_llm
+eng.apply_work(report.source, fulfilled)   # rewrites source, clears needs_llm
 ```
 
-`apply_work` replaces each `<!-- doc2md:await:<id> -->` marker with your output and
-marks the manifest record as no longer awaiting the LLM.
+`fulfilled` maps item id → your markdown (which may contain a Mermaid fence).
 
-### 4. Hand off
+### Step 4 — Report (once, at the end)
 
-Tell the user the sources are ready in `sources/` and to run llm_wiki against that
-directory. Do not summarise, build wiki pages, or write an index — that is llm_wiki's job.
+After all steps are complete, print one short summary:
+
+```
+✓ N converted  •  N skipped  •  N with LLM work completed
+Sources ready in sources/ — feed to llm_wiki.
+```
+
+List any warnings (parser fallbacks, unverified figures). **Do not ask follow-up
+questions. Do not offer options. Stop here.**
+
+---
 
 ## Finance verification (automatic)
 
-When a document contains financial figures, a single parser can silently
-mis-read a digit or miss a decimal. The engine defends against this by running
-**all available parsers** and cross-checking every numeric figure.
+When a document contains financial figures, the engine runs all available parsers
+and cross-checks every numeric figure automatically.
 
-**Trigger:** automatic when the document contains ≥3 finance keywords
-(`revenue`, `ebitda`, `balance sheet`, …) or the filename matches a financial
-pattern (`annual-report`, `10K`, `income-statement`, etc.).
-Override at runtime:
+**Trigger:** auto when ≥3 finance keywords present or filename matches a financial
+pattern. Override:
 
 ```python
 eng = Engine("raw", "sources", finance=True)   # force on
 eng = Engine("raw", "sources", finance=False)  # disable
-eng = Engine("raw", "sources")                 # auto-detect (default)
 ```
 
-CLI equivalents: `doc2md convert --finance` / `doc2md convert --no-finance`.
+**Your job when `report.verification` exists and `verified` is false:**
+List the flagged figures in the final Step 4 summary. Optionally read the flagged
+page image and confirm the correct value. Do not pause mid-run for this.
 
-**Output:** a sibling `<source>.verify.json` is written alongside every
-converted markdown file that triggers verification:
+---
 
-```json
-{
-  "document": "raw/Q3-results.pdf",
-  "parsers_used": ["pdf-inspector", "pymupdf4llm", "pdftotext"],
-  "total_figures": 142,
-  "mismatch_count": 2,
-  "verified": false,
-  "mismatches": [
-    {"label": "total revenue", "values": {"pymupdf4llm": "$1,234M", "pdftotext": "$1,284M"}, "flag": "warn"},
-    ...
-  ]
-}
+## Accuracy tuning (optional, only if the user explicitly asks)
+
+- `--parser pdftotext` — force one parser on every file.
+- `--compare` — run every parser per file, write `sources/<name>.<parser>.md` each.
+
+## MinerU mode (heavy-weight, use for image-heavy or complex-layout PDFs)
+
+When the user invokes `/doc2md --mineru` (or you detect that normal parsers failed badly
+on a raster or complex PDF), run Step 1 with MinerU as the forced parser:
+
+```python
+from doc2md.engine import Engine
+eng = Engine("raw", "sources", mineru=True)
+reports = eng.convert_all()
 ```
 
-**Your job when `verified` is false:**
-1. Read the verify.json and list the flagged figures to the user.
-2. Tell them: _"N figures could not be verified across parsers — check the
-   original document for these values before using this source."_
-3. Optionally: read the flagged page image with your vision and confirm the
-   correct value, then note it in the source with an inline comment.
+MinerU uses deep-learning OCR (PaddleOCR + layout detection).  It handles:
+- Image-embedded PDFs (phone screenshots, WhatsApp, scanned slides)
+- Dense tables and multi-column layouts
+- Mixed Arabic/English or other non-Latin scripts
 
-When `verified` is true, tell the user: _"All figures cross-checked across N
-parsers — no discrepancies found."_
+MinerU must be installed separately: `pip install magic-pdf[full]`
+It downloads model weights on first use (~2 GB).  Expect 30–120 s per page.
 
-## Accuracy tuning (optional, only if the user asks)
+After Step 1 completes, continue Steps 2–4 as normal — MinerU output still feeds
+the same vision/Mermaid pipeline for any remaining infographic pages.
 
-- `doc2md convert --parser pdftotext` — force one parser on every file.
-- `doc2md convert --compare` — run **every** available parser per file, writing
-  `sources/<name>.<parser>.md` each, so the user can diff accuracy and pick a chain.
-- Reorder fallback chains in code (`doc2md/parsers/registry.py`) to change defaults.
+---
 
 ## Rules
 
+- **Auto mode is the default.** Steps 1–4 run to completion with no user interaction.
 - You are the only LLM. No SDK calls, no API keys.
 - Deterministic code does extraction, simple Mermaid, OCR, optimisation, caching.
 - All infographics go through your vision — there is no deterministic-only branch for images.
 - Mermaid supplements diagram text (replace only for clearly-diagram-only sections).
 - Invalid Mermaid is dropped, never baked into a source.
-- Unchanged files are skipped automatically; do not re-process them.
+- Unchanged files are skipped automatically — do not re-process them.
+- **Never run `convert_one` in a loop as a status check.** Use `convert_all()`.
 
 ## CLI invocation — never do this wrong
 
@@ -175,9 +176,3 @@ doc2md convert --finance
 # WRONG — breaks relative imports
 python3 doc2md/cli.py parsers
 ```
-
-`doc2md/cli.py` uses relative imports (`from .engine import Engine`) so it
-cannot be run as a script. It is only callable via the `doc2md` entry point
-installed by `pip install -e .`.
-
-**`registry.print_status()` does not exist.** To list parsers: `doc2md parsers`.

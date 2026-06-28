@@ -8,8 +8,17 @@ It ships as a **Claude skill** (`/doc2md`): Claude is the LLM and does the only 
 
 ## Install
 
+### One-shot bundle (recommended)
+
 ```bash
-pip install -e ".[modern]"          # markitdown + pymupdf4llm are optional extras
+bash scripts/install_deps.sh            # core + brew + cargo parsers
+bash scripts/install_deps.sh --mineru   # also install MinerU (~2 GB model download)
+```
+
+### Manual
+
+```bash
+pip install -e ".[modern]"          # markitdown + pymupdf4llm optional extras
 doc2md parsers                      # list parsers and availability
 ```
 
@@ -22,6 +31,36 @@ cargo install pdf-inspector         # pdf2md (PDF → markdown, Rust)
 cargo install unpdf-cli             # unpdf (PDF → markdown, Rust)
 cargo install undoc-cli             # undoc (DOCX/XLSX/PPTX → markdown, Rust)
 ```
+
+### MinerU — deep-learning extraction for complex PDFs
+
+MinerU uses PaddleOCR and layout detection models to handle pages that lightweight parsers miss: image-embedded PDFs (phone screenshots, WhatsApp), dense tables, multi-column layouts, mixed Arabic/English scripts.
+
+```bash
+pip install "magic-pdf[full]"       # full model suite
+# or lighter:
+pip install "magic-pdf[lite]"       # smaller model, lower accuracy
+```
+
+Model weights (~2 GB) download on first use. Trigger the download explicitly:
+
+```bash
+magic-pdf --help
+```
+
+Use MinerU via the skill or engine:
+
+```bash
+/doc2md --mineru                    # skill: force MinerU for all PDFs in raw/
+```
+
+```python
+from doc2md.engine import Engine
+eng = Engine("raw", "sources", mineru=True)   # Python API
+reports = eng.convert_all()
+```
+
+If `magic-pdf` is not installed, doc2md prints the install hint and continues with the standard parser chain — it does not crash.
 
 ## Use as a skill (zero-config)
 
@@ -44,7 +83,7 @@ doc2md parsers                        # list parsers + availability
 
 ## Parsers (pluggable seam)
 
-Each extraction records which parser produced it, so accuracy can be audited. Built-in adapters: `pdf-inspector` (pdf2md), `unpdf`, `pymupdf4llm`, `pdfplumber`, `pdftotext`, `undoc`, `markitdown`, `docx` (python-docx), `pptx` (python-pptx), `xlsx` (openpyxl), `pandoc`, `image` (OCR → vision).
+Each extraction records which parser produced it, so accuracy can be audited. Built-in adapters: `pdf-inspector` (pdf2md), `unpdf`, `pdf-multilingual` (pymupdf4llm + tesseract OCR), `pymupdf4llm`, `pdfplumber`, `pdftotext`, `mineru` (MinerU deep-learning, optional), `undoc`, `markitdown`, `docx` (python-docx), `pptx` (python-pptx), `xlsx` (openpyxl), `pandoc`, `image` (OCR → vision).
 
 External parser packages register via the `doc2md.parsers` entry-point group — no doc2md edit required:
 
