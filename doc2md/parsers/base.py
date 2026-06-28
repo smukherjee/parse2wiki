@@ -57,8 +57,8 @@ class SubprocessParser:
 
     Subclasses set ``name``/``binary``/``extensions`` and implement
     :meth:`args` and (optionally) :meth:`parse`. Availability is resolved via
-    ``shutil.which``, so a missing binary degrades to a fallback-chain entry
-    rather than a crash.
+    ``shutil.which`` with a fallback to ``~/.cargo/bin`` for Rust binaries that
+    may not be on the subprocess PATH even when installed.
     """
 
     name: str = ""
@@ -67,13 +67,29 @@ class SubprocessParser:
     kinds: tuple[str, ...] = ("file",)
     timeout: int = 180
 
+    # Extra directories to probe when shutil.which fails (e.g. cargo installs).
+    _FALLBACK_DIRS: tuple[Path, ...] = (Path.home() / ".cargo" / "bin",)
+
     def __init__(self) -> None:
         if not self.name:
             raise TypeError(f"{type(self).__name__} must set .name")
 
+    def _resolve_binary(self) -> str | None:
+        """Return the full path to the binary, or None if not found."""
+        if not self.binary:
+            return None
+        found = shutil.which(self.binary)
+        if found:
+            return found
+        for d in self._FALLBACK_DIRS:
+            candidate = d / self.binary
+            if candidate.exists():
+                return str(candidate)
+        return None
+
     @property
     def available(self) -> bool:
-        return bool(self.binary) and shutil.which(self.binary) is not None
+        return self._resolve_binary() is not None
 
     def supports(self, source: str) -> bool:
         ext = Path(source).suffix.lower()
@@ -87,9 +103,10 @@ class SubprocessParser:
         return stdout
 
     def extract(self, source: str, *, ocr: bool = False) -> ExtractionResult:
+        bin_path = self._resolve_binary() or self.binary
         try:
             proc = subprocess.run(
-                [self.binary, *self.args(source, ocr=ocr)],
+                [bin_path, *self.args(source, ocr=ocr)],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,

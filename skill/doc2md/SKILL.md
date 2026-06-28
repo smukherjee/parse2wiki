@@ -162,3 +162,22 @@ parsers — no discrepancies found."_
 - Mermaid supplements diagram text (replace only for clearly-diagram-only sections).
 - Invalid Mermaid is dropped, never baked into a source.
 - Unchanged files are skipped automatically; do not re-process them.
+
+## CLI invocation — never do this wrong
+
+**Always use the installed entry point, never `python3 doc2md/cli.py`.**
+
+```bash
+# CORRECT
+doc2md parsers
+doc2md convert --finance
+
+# WRONG — breaks relative imports
+python3 doc2md/cli.py parsers
+```
+
+`doc2md/cli.py` uses relative imports (`from .engine import Engine`) so it
+cannot be run as a script. It is only callable via the `doc2md` entry point
+installed by `pip install -e .`.
+
+**`registry.print_status()` does not exist.** To list parsers: `doc2md parsers`.
