@@ -29,8 +29,7 @@ echo ""
 
 # ── 1. Python core package ────────────────────────────────────────────────────
 echo "[1/4] Python package (core + modern extras)"
-pipx
- install -e ".[modern]"
+pipx install -e ".[modern]"
 
 # ── 2. System binaries via Homebrew ───────────────────────────────────────────
 if [[ $SKIP_BREW -eq 0 ]]; then
@@ -78,7 +77,7 @@ if [[ $INSTALL_MINERU -eq 1 ]]; then
     export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
   fi
 
-  pipx install "magic-pdf[all]"
+  uv pip install "magic-pdf[all]"
   echo ""
   echo "      Triggering first-run model download (this may take several minutes)..."
   # magic-pdf downloads weights on first invocation; --help triggers the check

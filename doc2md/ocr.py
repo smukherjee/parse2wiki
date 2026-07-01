@@ -50,16 +50,60 @@ def render_pdf_pages(
     last: Optional[int] = None,
     dpi: int = 300,
 ):
-    """Render PDF pages to PIL images via pdf2image. Empty list if unavailable."""
-    if not pdf2image_available():
-        return []
-    pdf2image = importlib.import_module("pdf2image")
-    try:
-        return pdf2image.convert_from_path(
-            pdf_path, first_page=first, last_page=last, dpi=dpi
-        )
-    except Exception:
-        return []
+    """Render PDF pages to PIL images. Empty list if no backend available.
+
+    Backends tried in order: pdf2image (poppler), PyMuPDF (fitz), pypdfium2.
+    """
+    if pdf2image_available():
+        pdf2image = importlib.import_module("pdf2image")
+        try:
+            return pdf2image.convert_from_path(
+                pdf_path, first_page=first, last_page=last, dpi=dpi
+            )
+        except Exception:
+            pass
+    # ponytail: fitz/pypdfium2 fallback so vision rendering works without poppler/pdf2image
+    if _have("fitz", "PIL"):
+        import fitz  # PyMuPDF
+        from PIL import Image
+        import io
+
+        try:
+            zoom = dpi / 72.0
+            doc = fitz.open(pdf_path)
+            total = doc.page_count
+            f = first or 1
+            l = last or total
+            f = max(f, 1)
+            l = min(l, total)
+            out = []
+            for i in range(f, l + 1):
+                pix = doc.load_page(i - 1).get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+                out.append(Image.open(io.BytesIO(pix.tobytes("png"))))
+            doc.close()
+            return out
+        except Exception:
+            pass
+    if _have("pypdfium2", "PIL"):
+        import pypdfium2 as pdfium
+        from PIL import Image
+
+        try:
+            scale = dpi / 72.0
+            doc = pdfium.PdfDocument(pdf_path)
+            total = len(doc)
+            f = first or 1
+            l = last or total
+            f = max(f, 1)
+            l = min(l, total)
+            out = []
+            for i in range(f, l + 1):
+                out.append(doc[i - 1].render(scale=scale).to_pil())
+            doc.close()
+            return out
+        except Exception:
+            pass
+    return []
 
 
 def ocr_pdf(pdf_path: str, *, dpi: int = 300) -> str:
