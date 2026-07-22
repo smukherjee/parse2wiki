@@ -6,7 +6,7 @@ import importlib
 
 from .base import ExtractionResult, LibraryParser
 
-_MAX_ROWS = 200
+_MAX_ROWS = 600
 _MAX_COLS = 32
 
 
