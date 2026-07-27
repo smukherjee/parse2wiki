@@ -202,3 +202,43 @@ eval/airport-eye/
 ```
 
 **Remaining hardening (not yet done):** #2 fabrication-injection test, #3 more cases (BAC/EAC/RCA/Dial b2b), #4 blind repeated judging, #5 parser fix for split-table reports.
+
+---
+
+# Client vs. Skill Eval (DIAL gold set) — Corrected, Genuinely Blind
+
+**Why this section exists:** A second, independent gold set became available after the original eval — the client's own gap list (`sources/Airport Eye/client gaps.md`, dated 23-July-2026). The eval below answers a different question: does the compliance-validator skill, run blind against the source documents and the consolidated proposal, surface every gap the client flagged?
+
+**Correction (23-July-2026):** The version of this section previously here reported Recall = 1.000 from a run that was **not actually blind** — 25 of its 78 rows cited the client gap document directly, despite its own header claiming otherwise. That contaminated run has been archived as `client-gap-eval/skill-derived-gaps-ASSISTED-CONTAMINATED.md` / `client-gap-eval/client-vs-skill-eval-ASSISTED-CONTAMINATED.md`. The section below reflects a genuinely blind re-run (fresh subagent, no exposure to the client gap document or the eval directory).
+
+**Gold set:** 46 client gaps in `client-gap-eval/client-gaps-inventory.md` (C-001..C-046).
+**Predicted set:** 13 skill gaps in `client-gap-eval/skill-derived-gaps.md` (S-001..S-013), produced by a fresh subagent re-running the compliance-validator's process against the source docs and the proposal, with an explicit instruction never to read any file with "client gap" in its name.
+**Match table + interpretation:** `client-gap-eval/client-vs-skill-eval.md`.
+**Scoreboard:** `client-gap-eval/README.md`.
+
+| Metric | Value | Note |
+|---|---|---|
+| **Recall** | **0.065** | 3 / 46 client gaps matched (C-009 weak, C-011 strong, C-037 weak) |
+| **Precision** | **0.538** | 7 / 13 skill gaps match a client gap |
+| **F1** | **0.116** | |
+| Skill gaps not in client set | 6 / 13 (46%) | S-007..S-012 — all real, source-binding findings; not over-claims, just outside the client's list |
+| False negatives (missed client gaps) | 43 / 46 | see interpretation below |
+
+**Headline:** A genuinely blind run — bound only to the CR/ABR/RFP/Requirements Register/RTM and the proposal — surfaces only 3 of the client's 46 gaps. This is **not a skill defect**: 43 of the 46 client gaps assert numeric thresholds, accountability assignments, or architectural mandates that are **not written into any of the formal source documents** — they are the client's own post-review preferences and tightening, which a source-bound blind check structurally cannot cite. One item (C-023, a RACI reassignment demand) directly **conflicts** with the CR's binding RACI matrix, which the skill's S-012 correctly flagged as a deviation — illustrating that the client's own preference and the formal source can disagree.
+
+**What this means for the eval design:**
+- The compliance-validator is a strict, source-bound gate — a strong, defensible check against the *formal* requirement baseline, but it answers a structurally different question than "did we anticipate everything the client would personally want."
+- The fix is not to loosen the skill's blindness/provenance discipline to chase these 43 items (that would mean fabricating sources). The fix already made: `SKILL.md` now accepts an optional `stakeholder-deltas.md` input so post-issuance buyer preferences can be checked against a declared, ranked provenance source instead.
+- Full interpretation, per-gap match table, and the C-023 conflict analysis: `client-gap-eval/client-vs-skill-eval.md`.
+
+**Files in this eval:**
+```
+eval/airport-eye/
+└── client-gap-eval/
+    ├── README.md                                     (scoreboard + headline metrics)
+    ├── client-gaps-inventory.md                      (46 client gaps, C-001..C-046)
+    ├── skill-derived-gaps.md                         (13 skill gaps, genuinely blind, S-001..S-013)
+    ├── client-vs-skill-eval.md                       (per-gap match table + interpretation)
+    ├── skill-derived-gaps-ASSISTED-CONTAMINATED.md   (archived, non-blind, 78 gaps)
+    └── client-vs-skill-eval-ASSISTED-CONTAMINATED.md (archived, non-blind match table)
+```

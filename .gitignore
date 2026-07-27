@@ -54,3 +54,4 @@ sources/
 raw/
 doc2md-cache/
 .doc2md-cache/
+.tokensave

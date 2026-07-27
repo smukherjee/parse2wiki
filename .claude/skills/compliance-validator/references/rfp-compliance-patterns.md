@@ -104,3 +104,13 @@ Not all compliance requirements carry equal risk:
 **Administrative requirements:** Failure results in requests for clarification or minor deductions. These are typically: formatting inconsistencies, minor cross-reference errors, spelling of client name.
 
 The compliance validator should assess and flag the risk level of each requirement so the team can prioritize remediation. Fix disqualifying issues first, always. Scoring-affecting issues second. Administrative issues if time permits.
+
+## Functional and Non-Functional Requirements (FRs / NFRs)
+
+Procurement documents often enumerate FRs and NFRs explicitly (e.g., a `Requirements` section in the RFP, or a buyer's response sheet with rows like `FR17`, `NF38`). The compliance validator should treat these as first-class requirements with the following discipline:
+
+- **Modal verb drives severity.** `shall` / `must` / `will` (binding) → blocking if missing. `should` → scored deduction. `may` → optional. Missing modal verb → treat as binding; record the assumption.
+- **Scope tier separates ghost requirements from real ones.** A `phase_2` or `optional` requirement missing from the proposal is not a failure. A `base` requirement missing is. Conflating the two is one of the most common ways compliance reports mis-prioritise remediation.
+- **Commitment vs capability claim.** A `shall` requirement addressed only by a capability claim ("our platform supports X") is `Partial`, not `Pass`. The buyer may not accept a capability claim as evidence.
+- **Buyer response sheet is the most direct source.** When the buyer supplies a response sheet / compliance matrix, extract FRs/NFRs from it first. Re-deriving IDs by reading the RFP body is error-prone.
+- **Subsystem / layer labels are free-form.** `applies_to` and `domain_hint` should be derived from the source documents, not from a fixed taxonomy. The same procurement can call the same subsystem a "service", a "module", a "layer", or a "subsystem" — record what the source uses.
