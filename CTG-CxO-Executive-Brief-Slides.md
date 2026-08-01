@@ -10,9 +10,9 @@ size: 16:9
 # CTG Passenger Experience & Video Analytics Platform
 ## Executive Briefing — Strategic Overview
 
-**Prepared for:** CTG Leadership (CEO / CTO)
+**Prepared for:** CCNC (Consorcio Constructor Nueva Cartagena) & OINAC / CTG Leadership
 **Prepared by:** Waisl Digital
-**Date:** July 2026 | Confidential — For Discussion Purposes
+**Date:** August 2026 | Confidential — For Discussion Purposes
 
 ---
 
@@ -22,7 +22,7 @@ size: 16:9
 - Passenger volume growing **7M → 11M annually** by December 2027
 - Today's scale is already significant: **~20–21K passengers/day** on average (peaking at ~22–25K/day in December–January), across **~75–80 flight movements/day**, through 1 runway, 15 gates, and a reported 72 check-in counters
 - Today, **CTG has no objective visibility into any of this** — no data on queue times, congestion, or satisfaction drivers
-- The Colombian Government / OINAC concession requires a technology solution for **"Passenger Experience in the New Normal"**
+- This is a **contractual obligation, not a discretionary upgrade**: Concession Contract Intervención 8 ("Implantación Nuevas Tecnologías, Procesos Pasajeros") legally requires a technology solution for **"Passenger Experience in the New Normal"** — OINAC and CCNC must demonstrate compliance
 - Growth without visibility means growth without control — this is the moment to fix that, before the new terminal opens
 
 ---
@@ -152,19 +152,27 @@ CTG's own baseline will be established during the pilot phase via ASQ survey + o
 
 ## The Decision We Need Today: Approve the Site Survey
 
-**What we're asking for:**
-1. **Approval to proceed** to detailed technical design and on-site survey
-2. **Confirmed budget envelope** for the Waisl solution & services scope
-3. **Collins AODB/RMS/FIDS data access** commitment — this is a prerequisite for turnaround/baggage KPIs
-4. **Decision support** on BLE approach — Waisl will recommend the best-fit option
-5. **Confirmation of L1 local support model** (newly scoped requirement)
-6. **Site visit access** — target: 2nd–3rd week of August 2026
+**From CCNC / Consortium (near-term, unblocks pilot design):**
+1. **Current camera inventory** — make, model, age, ONVIF compliance — and current NVR/storage configuration
+2. **CAD files** showing existing camera locations
+3. **Confirmed pilot area** (check-in + security proposed) with photos of existing camera coverage
+4. **Camera models selected for the new expansion zones** — or confirmation Waisl can recommend
+
+**From OINAC / CTG (asset owner, unblocks scope and budget):**
+5. **Approval to proceed** to detailed technical design and on-site survey
+6. **Confirmed budget envelope** for the Waisl solution & services scope
+7. **Collins AODB/RMS/FIDS data access** commitment — this is a prerequisite for turnaround/baggage KPIs
+8. **Decision support** on BLE approach — Waisl will recommend the best-fit option
+9. **Confirmation of L1 local support model** (newly scoped requirement)
 
 **What happens next:**
-- **Site visit:** Mid-to-late August 2026
+- **In-person meeting & solution walkthrough:** August 24–26, 2026, Cartagena
+- **Site visit:** Following this meeting, exact dates TBC with CTG Ops/Facilities
 - **Detailed technical proposal & pricing:** Following site survey
 - **Pilot kickoff:** Q1 2027 (~28-week pilot, running through Q3 2027)
 - **Full deployment complete:** Q4 2027, aligned with terminal construction completion
+
+*Items 1–4 were requested from CCNC on 24 Jul 2026 and remain outstanding as of this briefing — CCNC has indicated the camera-inventory/NVR data sits with OINAC, not CCNC directly.*
 
 ---
 
