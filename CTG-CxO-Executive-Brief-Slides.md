@@ -19,8 +19,9 @@ size: 16:9
 ## Why This, Why Now
 
 - CTG is undertaking a **US$500M terminal expansion**: 25,000 m² → 44,000 m² by end of 2027
-- Passenger volume growing **7M → 11M annually** by December 2027
+- Passenger volume: **7.7M in 2025**, tracking to a record **>8M in 2026**, growing toward **~11M annually by December 2027**
 - Today's scale is already significant: **~20–21K passengers/day** on average (peaking at ~22–25K/day in December–January), across **~75–80 flight movements/day**, through 1 runway, 15 gates, and a reported 72 check-in counters
+- *2025/2026 figures confirmed by OINAC's own reporting (El Universal, 27 Jul 2026) — >20K/day average and 3.9M passengers in H1 2026 alone, corroborating the scale claim above.*
 - Today, **CTG has no objective visibility into any of this** — no data on queue times, congestion, or satisfaction drivers
 - This is a **contractual obligation, not a discretionary upgrade**: Concession Contract Intervención 8 ("Implantación Nuevas Tecnologías, Procesos Pasajeros") legally requires a technology solution for **"Passenger Experience in the New Normal"** — OINAC and CCNC must demonstrate compliance
 - Growth without visibility means growth without control — this is the moment to fix that, before the new terminal opens

@@ -17,6 +17,7 @@
 - 🟡 **Lock down the ballpark-estimate approach and its caveat, in writing, with CCNC.** CCNC has told us explicitly they'll use whatever number we give to build their own economic offer. Confirm with them (ideally in writing) that any figure shared Aug 24–26 is non-binding and not to be used in a formal offer/budget submission until the site survey completes.
 - 🟡 **Secure multi-year support commitment from OINAC, not just CCNC.** CCNC's contractual interest ends at construction handover; OINAC operates the concession for years afterward. Get OINAC to co-sign or independently commit to the long-term support/SLA/IP-documentation-escrow terms — this is what Item 9 ("L1 local support model") in the deck is quietly gesturing at; make it explicit.
 - 🟢 Confirm final attendee list and roles for the Aug 24–26 meeting (Waisl side and client side) once the above stakeholder issues are resolved.
+- 🟢 Public press (El Universal, 27 Jul 2026) names **Patricia Mejía** as OINAC's concession manager, quoted directly on June 2026 traffic figures — cross-check against the existing OINAC contacts (Christian Carrazana / Abdon Ramirez) rather than treat as a new lead; may be useful if the direct-engagement line in the item above needs a specific name to route through.
 
 ---
 
