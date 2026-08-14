@@ -1436,3 +1436,172 @@ def test_engine_image_dominant_not_called_when_vector_present(tmp_path):
                 eng.convert_one(pdf_file)
 
     mock_idp.assert_not_called()
+
+
+# -- password-protected PDFs (qpdf) --------------------------------------
+
+import shutil
+import subprocess
+
+_HAS_QPDF = shutil.which("qpdf") is not None
+requires_qpdf = pytest.mark.skipif(not _HAS_QPDF, reason="qpdf not on PATH")
+
+_MINIMAL_PDF = b"""%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Resources<<>>/Contents 4 0 R>>endobj
+4 0 obj<</Length 44>>stream
+BT /F1 24 Tf 50 100 Td (Hello) Tj ET
+endstream
+endobj
+trailer<</Size 5/Root 1 0 R>>
+%%EOF"""
+
+
+def _make_pdf(tmp_path: Path, name: str, *, user_pw: str = "", owner_pw: str = "") -> Path:
+    """Build a valid single-page PDF, optionally encrypted, via qpdf itself."""
+    raw = tmp_path / f"_raw_{name}"
+    raw.write_bytes(_MINIMAL_PDF)
+    fixed = tmp_path / name
+    # exit 3 = "warnings only" (qpdf recovers the hand-written xref above) — not a failure.
+    subprocess.run(["qpdf", "--empty", "--pages", str(raw), "1", "--", str(fixed)],
+                    capture_output=True)
+    if owner_pw or user_pw:
+        encrypted = tmp_path / f"enc_{name}"
+        subprocess.run(
+            ["qpdf", "--encrypt", user_pw, owner_pw, "256", "--", str(fixed), str(encrypted)],
+            capture_output=True,
+        )
+        return encrypted
+    return fixed
+
+
+class _QpdfReadableParser:
+    """Fake parser that only succeeds if `source` is actually openable by qpdf
+    without a password — proves the engine handed it a decrypted copy."""
+
+    name = "fakepdf"
+    kinds = ("file",)
+    extensions = (".pdf",)
+
+    @property
+    def available(self):
+        return True
+
+    def supports(self, source):
+        return Path(source).suffix.lower() == ".pdf"
+
+    def extract(self, source, *, ocr=False):
+        proc = subprocess.run(["qpdf", "--check", source], capture_output=True, text=True)
+        if proc.returncode not in (0, 3):
+            return ExtractionResult(text="", parser=self.name)
+        return ExtractionResult(text=f"read-ok:{Path(source).name}", parser=self.name)
+
+
+def _pdf_engine(tmp_path, raw, *, password_provider=None):
+    from doc2md.engine import Engine
+    reg = ExtractorRegistry([_QpdfReadableParser()], chains={".pdf": ["fakepdf"]})
+    return Engine(raw, tmp_path / "sources", tmp_path / "cache", registry=reg, ocr=False,
+                  password_provider=password_provider)
+
+
+@requires_qpdf
+def test_security_password_status_classifies_files(tmp_path):
+    from doc2md.security import password_status
+
+    plain = _make_pdf(tmp_path, "plain.pdf")
+    owner_only = _make_pdf(tmp_path, "owner.pdf", owner_pw="ownerpw")
+    user_locked = _make_pdf(tmp_path, "locked.pdf", user_pw="secret", owner_pw="ownerpw")
+
+    assert password_status(str(plain)) == "none"
+    assert password_status(str(owner_only)) == "owner-only"
+    assert password_status(str(user_locked)) == "required"
+
+
+@requires_qpdf
+def test_security_decrypt_pdf_wrong_password_fails(tmp_path):
+    from doc2md.security import decrypt_pdf
+
+    locked = _make_pdf(tmp_path, "locked.pdf", user_pw="secret", owner_pw="ownerpw")
+    ok, err = decrypt_pdf(str(locked), "wrong", str(tmp_path / "out.pdf"))
+    assert ok is False
+    assert "password" in err.lower()
+
+    ok, err = decrypt_pdf(str(locked), "secret", str(tmp_path / "out2.pdf"))
+    assert ok is True
+    assert err is None
+    assert (tmp_path / "out2.pdf").exists()
+
+
+@requires_qpdf
+def test_engine_plain_pdf_unaffected(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pdf = _make_pdf(tmp_path, "plain.pdf")
+    (raw / "plain.pdf").write_bytes(pdf.read_bytes())
+
+    eng = _pdf_engine(tmp_path, raw)
+    r = eng.convert_one(raw / "plain.pdf")
+    assert not r.needs_password
+    assert "read-ok" in Path(r.source).read_text()
+
+
+@requires_qpdf
+def test_engine_owner_locked_pdf_decrypts_without_prompt(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pdf = _make_pdf(tmp_path, "owner.pdf", owner_pw="ownerpw")
+    (raw / "owner.pdf").write_bytes(pdf.read_bytes())
+
+    prompted = {"n": 0}
+    eng = _pdf_engine(tmp_path, raw, password_provider=lambda p: prompted.update(n=1) or None)
+    r = eng.convert_one(raw / "owner.pdf")
+    assert not r.needs_password
+    assert prompted["n"] == 0  # owner-only locks never prompt
+    assert "read-ok" in Path(r.source).read_text()
+
+
+@requires_qpdf
+def test_engine_user_locked_pdf_needs_password_without_provider(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pdf = _make_pdf(tmp_path, "locked.pdf", user_pw="secret", owner_pw="ownerpw")
+    (raw / "locked.pdf").write_bytes(pdf.read_bytes())
+
+    eng = _pdf_engine(tmp_path, raw, password_provider=lambda p: None)
+    r = eng.convert_one(raw / "locked.pdf")
+    assert r.needs_password
+    assert r.source is None
+    assert any("password" in w.lower() for w in r.warnings)
+
+
+@requires_qpdf
+def test_engine_wrong_explicit_password_reports_needs_password(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pdf = _make_pdf(tmp_path, "locked.pdf", user_pw="secret", owner_pw="ownerpw")
+    (raw / "locked.pdf").write_bytes(pdf.read_bytes())
+
+    eng = _pdf_engine(tmp_path, raw, password_provider=lambda p: None)
+    r = eng.convert_one(raw / "locked.pdf", password="wrong")
+    assert r.needs_password
+    assert any("invalid password" in w.lower() for w in r.warnings)
+
+
+@requires_qpdf
+def test_engine_correct_explicit_password_decrypts_and_caches(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pdf = _make_pdf(tmp_path, "locked.pdf", user_pw="secret", owner_pw="ownerpw")
+    (raw / "locked.pdf").write_bytes(pdf.read_bytes())
+
+    eng = _pdf_engine(tmp_path, raw, password_provider=lambda p: None)
+    r = eng.convert_one(raw / "locked.pdf", password="secret")
+    assert not r.needs_password
+    assert "read-ok" in Path(r.source).read_text()
+
+    # A later run with no password reuses the cached, already-decrypted copy.
+    eng2 = _pdf_engine(tmp_path, raw, password_provider=lambda p: None)
+    r2 = eng2.convert_one(raw / "locked.pdf")
+    assert not r2.needs_password
+    assert r2.skipped

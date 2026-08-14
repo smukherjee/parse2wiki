@@ -20,8 +20,9 @@ You never call an `anthropic` SDK and never need an `ANTHROPIC_KEY` — you *are
 **Do not ask the user questions. Do not pause between steps. Do not summarise
 mid-run. Execute steps 1–4 in sequence and only speak at the very end.**
 
-The only exception: `/doc2md --prompt` inverts to interactive mode — pause after
-each step and confirm before proceeding.
+Two exceptions: `/doc2md --prompt` inverts to interactive mode — pause after
+each step and confirm before proceeding — and a password-protected PDF, which
+cannot be converted without asking (see "Password-protected PDFs" below).
 
 ---
 
@@ -51,7 +52,10 @@ eng = Engine("raw", "sources")
 reports = eng.convert_all()
 ```
 
-Each `ConvertReport`: `source`, `work_order`, `items`, `needs_llm`, `parser`, `skipped`, `warnings`.
+Each `ConvertReport`: `source`, `work_order`, `items`, `needs_llm`, `needs_password`, `parser`, `skipped`, `warnings`.
+
+If any report has `needs_password=True`, handle it now — see "Password-protected
+PDFs" below. This is the one thing worth pausing for before continuing.
 
 If every report has `needs_llm=False` and `skipped=False`, jump to Step 4.
 
@@ -104,6 +108,28 @@ List any warnings (parser fallbacks, unverified figures). **Do not ask follow-up
 questions. Do not offer options. Stop here.**
 
 ---
+
+## Password-protected PDFs (the other exception to AUTO MODE)
+
+`convert_all()` decrypts PDFs via `qpdf` automatically when it can — an
+owner-locked PDF (no printing/editing, empty *open* password) is decrypted
+silently, no prompt needed. A PDF that needs a real password to open cannot
+be converted without one, so this is the one other case where you interrupt
+AUTO MODE to ask.
+
+Check each report for `needs_password`. When true:
+
+1. Ask the user for that file's password (this is the only allowed mid-run question).
+2. Retry just that file: `eng.convert_one(report.path, password=the_password)`.
+3. If the returned report still has `needs_password=True`, the password was
+   wrong — show its `warnings` and ask again.
+
+The decrypted copy is cached by content hash (`.doc2md-cache/decrypted/`), so
+a correct password is only ever needed once per file, even across reruns.
+
+If `qpdf` isn't installed, `warnings` says so — tell the user to run
+`brew install qpdf` (or see `scripts/install_deps.sh`) rather than asking for
+a password that can't be used yet.
 
 ## Finance verification (automatic)
 

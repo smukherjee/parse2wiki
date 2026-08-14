@@ -34,11 +34,11 @@ pipx install -e ".[modern]"
 # ── 2. System binaries via Homebrew ───────────────────────────────────────────
 if [[ $SKIP_BREW -eq 0 ]]; then
   if command -v brew &>/dev/null; then
-    echo "[2/4] Homebrew: poppler (pdftotext), tesseract (OCR), pandoc"
-    brew install poppler tesseract pandoc
+    echo "[2/4] Homebrew: poppler (pdftotext), tesseract (OCR), pandoc, qpdf (password-protected PDFs)"
+    brew install poppler tesseract pandoc qpdf
   else
     echo "[2/4] Homebrew not found — skipping system binaries."
-    echo "      Install manually: poppler, tesseract, pandoc"
+    echo "      Install manually: poppler, tesseract, pandoc, qpdf"
   fi
 else
   echo "[2/4] --no-brew set, skipping Homebrew packages"

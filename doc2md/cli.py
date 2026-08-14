@@ -26,9 +26,16 @@ def cli() -> None:
 @click.option("--finance/--no-finance", default=None,
               help="Finance verification: run all parsers and cross-check figures. "
                    "Default: auto-detect from document content.")
-def convert(raw_dir, sources_dir, cache_dir, parser, ocr, compare, finance):
+@click.option("--pdf-password", default=None,
+              help="Password to try on every encrypted PDF in this run. "
+                   "Without it, an interactive terminal is prompted per-file "
+                   "(one prompt each, up to 3 attempts); non-interactive runs "
+                   "report the file as needing a password instead of hanging.")
+def convert(raw_dir, sources_dir, cache_dir, parser, ocr, compare, finance, pdf_password):
     """Convert documents in --raw to token-optimised markdown in --sources."""
-    eng = Engine(raw_dir, sources_dir, cache_dir, ocr=ocr, parser=parser, finance=finance)
+    password_provider = (lambda _path: pdf_password) if pdf_password else None
+    eng = Engine(raw_dir, sources_dir, cache_dir, ocr=ocr, parser=parser, finance=finance,
+                 password_provider=password_provider)
     if compare:
         for p in eng._iter_files():  # noqa: SLF001
             for r in eng.compare_one(p):
@@ -38,6 +45,11 @@ def convert(raw_dir, sources_dir, cache_dir, parser, ocr, compare, finance):
     for r in reports:
         if r.skipped:
             click.echo(f"  skip  {r.path} (unchanged)")
+            continue
+        if r.needs_password:
+            click.echo(f"  lock  {r.path} (password-protected — see warnings)")
+            for w in r.warnings:
+                click.echo(f"        ! {w}")
             continue
         tag = "llm " if r.needs_llm else "ok  "
         click.echo(f"  {tag} {r.parser:14s} {r.path} → {r.source}")
@@ -67,6 +79,9 @@ def parsers(raw_dir):
     eng = Engine(raw_dir, "sources", ocr=False)
     for name, p in eng.registry.parsers.items():
         click.echo(f"  {'ok' if p.available else '--':2s}  {name:14s} {', '.join(getattr(p, 'extensions', ()) or ())}")
+
+    from .security import qpdf_available
+    click.echo(f"  {'ok' if qpdf_available() else '--':2s}  qpdf           .pdf (password decrypt)")
 
 
 @cli.command()

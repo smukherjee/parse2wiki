@@ -9,11 +9,12 @@ LLM; everything LLM-bound is emitted as a work-order the skill fulfils.
 from __future__ import annotations
 
 import logging
+import sys
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .detection import DiagramDetection, detect_diagrams
 from .finance import VerificationReport, compare_extractors, is_financial
@@ -25,7 +26,21 @@ from .parsers import build_registry
 from .parsers.base import ExtractionResult
 from .parsers.registry import ExtractorRegistry
 from .figures import graphic_dense_pages, image_dominant_pages
+from .security import QPDF_INSTALL_HINT, decrypt_pdf, looks_encrypted, password_status
 from .writer import WorkItem, apply_work, build_source, write_work_order
+
+
+def _default_password_provider(path: str) -> Optional[str]:
+    """Prompt on a real terminal; return None in non-interactive contexts
+    (the caller then reports ``needs_password`` instead of hanging)."""
+    if not sys.stdin.isatty():
+        return None
+    import getpass
+    try:
+        pw = getpass.getpass(f"Password for {Path(path).name}: ")
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return pw or None
 
 _SUPPORTED = {".pdf", ".docx", ".pptx", ".xlsx", ".doc", ".odt",
               ".html", ".htm", ".csv", ".md", ".txt",
@@ -40,6 +55,7 @@ class ConvertReport:
     items: list[dict] = field(default_factory=list)
     parser: str = ""
     needs_llm: bool = False
+    needs_password: bool = False
     skipped: bool = False
     warnings: list[str] = field(default_factory=list)
     verification: Optional[VerificationReport] = None
@@ -59,6 +75,7 @@ class Engine:
         vision_dpi: int = 150,  # P7: lower default cuts vision tokens ~30%
         max_image_dim: int = 1024,  # cap longest edge — keeps 7-image batches under API limit
         mineru: bool = False,  # force MinerU for every PDF (overrides parser chain)
+        password_provider: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self.raw_dir = Path(raw_dir)
         self.sources_dir = Path(sources_dir)
@@ -72,6 +89,9 @@ class Engine:
         self.finance = finance  # True=force, False=disable, None=auto-detect
         self.vision_dpi = vision_dpi  # P7
         self.max_image_dim = max_image_dim
+        # Called with a PDF path when a password is needed and none was
+        # passed explicitly to convert_one(); returns None to skip the file.
+        self.password_provider = password_provider or _default_password_provider
         if mineru:
             self.parser = "mineru"
             # Warn eagerly so the user sees the install hint before waiting for convert_all
@@ -158,6 +178,62 @@ class Engine:
             })
         return result
 
+    # -- password-protected PDFs ----------------------------------------
+
+    def _resolve_pdf_password(
+        self, path: Path, file_hash: str, explicit_password: Optional[str],
+    ) -> tuple[Optional[Path], Optional[str], bool]:
+        """For an encrypted PDF, return a decrypted, content-addressed cached
+        copy for the parser chain to read.
+
+        Returns ``(read_path, warning, needs_password)``. ``read_path`` is
+        None when the file can't be read (qpdf missing on a file that looks
+        encrypted, or no/wrong password) — the caller should abort this file.
+        A non-PDF or unencrypted PDF passes through unchanged.
+        """
+        if path.suffix.lower() != ".pdf":
+            return path, None, False
+
+        status = password_status(str(path))
+
+        if status == "none":
+            return path, None, False
+
+        if status == "unknown":
+            if looks_encrypted(str(path)):
+                return None, f"possibly password-protected PDF — {QPDF_INSTALL_HINT.splitlines()[0]}", True
+            return path, None, False  # qpdf missing, but file doesn't look encrypted
+
+        dest = self.cache_dir / "decrypted" / f"{file_hash}.pdf"
+        if dest.exists():
+            return dest, None, False
+
+        if status == "owner-only":
+            # Empty user password already opens it — decrypt silently, no prompt.
+            ok, err = decrypt_pdf(str(path), "", str(dest))
+            if ok:
+                return dest, None, False
+            return None, f"failed to auto-decrypt owner-locked PDF: {err}", False
+
+        # status == "required": a real password is needed.
+        password = explicit_password
+        for attempt in range(3):
+            if not password:
+                password = self.password_provider(str(path))
+            if not password:
+                return None, "password-protected PDF — no password supplied", True
+            ok, err = decrypt_pdf(str(path), password, str(dest))
+            if ok:
+                return dest, None, False
+            wrong = bool(err) and "password" in err.lower()
+            # An explicit (caller-supplied) password that fails is reported
+            # back immediately rather than silently retried — the caller
+            # (skill/CLI) owns re-asking the user and calling us again.
+            if explicit_password is not None or not wrong:
+                return None, f"password-protected PDF — {err}", True
+            password = None  # force a re-prompt on the next loop iteration
+        return None, "password-protected PDF — too many incorrect attempts", True
+
     # -- vision images -------------------------------------------------
 
     def _render_vision_pages(self, path: Path, file_hash: str, pages: list[int]) -> list[str]:
@@ -210,6 +286,7 @@ class Engine:
         path: str | Path,
         *,
         file_hash: str | None = None,  # P2: accept precomputed hash to avoid double-read
+        password: str | None = None,  # explicit password for an encrypted PDF
     ) -> ConvertReport:
         path = Path(path)
         report = ConvertReport(path=str(path))
@@ -245,7 +322,20 @@ class Engine:
                 report.parser = rec.parser
                 return report
 
-        result = self._extract(path, file_hash)
+        read_path = path
+        if path.suffix.lower() == ".pdf":
+            resolved, warn, needs_password = self._resolve_pdf_password(path, file_hash, password)
+            if warn:
+                report.warnings.append(warn)
+            if resolved is None:
+                report.needs_password = needs_password
+                self._record(path, file_hash, ExtractionResult(text="", parser="qpdf"),
+                             detection=None, source=None, items=[], failed=True,
+                             mtime=mtime, size=size)
+                return report
+            read_path = resolved
+
+        result = self._extract(read_path, file_hash)
         report.parser = result.parser
         report.warnings.extend(result.warnings)
 
@@ -292,16 +382,16 @@ class Engine:
         if not vision_pages and path.suffix.lower() == ".pdf":
             cached_pages = self.manifest.get_page_analysis(file_hash)
             if cached_pages is None:
-                cached_pages = graphic_dense_pages(str(path))
+                cached_pages = graphic_dense_pages(str(read_path))
                 if not cached_pages:
                     # Fallback for raster-only PDFs (screenshots, WhatsApp, scanned slides):
                     # zero vector elements fool graphic_dense_pages, but pdfplumber can
                     # enumerate the embedded raster images and measure their coverage.
-                    cached_pages = image_dominant_pages(str(path))
+                    cached_pages = image_dominant_pages(str(read_path))
                 self.manifest.set_page_analysis(file_hash, cached_pages)
             vision_pages = cached_pages
 
-        rendered_pages = self._render_vision_pages(path, file_hash, vision_pages)
+        rendered_pages = self._render_vision_pages(read_path, file_hash, vision_pages)
         if vision_pages and not rendered_pages:
             # Don't silently drop a figure the parser asked us to look at.
             report.warnings.append(
@@ -357,7 +447,7 @@ class Engine:
         if do_finance is None:
             do_finance = is_financial(result.text, path=path)
         if do_finance:
-            verify = self.finance_verify_one(path, file_hash)
+            verify = self.finance_verify_one(path, file_hash, read_path=read_path)
             report.verification = verify
             verify_path = source_path.with_suffix(".verify.json")
             verify.write(verify_path)
@@ -443,16 +533,24 @@ class Engine:
 
     # -- finance verification ------------------------------------------
 
-    def finance_verify_one(self, path: Path, file_hash: str) -> VerificationReport:
-        """Run all available parsers on path, compare numeric figures across them."""
+    def finance_verify_one(
+        self, path: Path, file_hash: str, *, read_path: Path | None = None,
+    ) -> VerificationReport:
+        """Run all available parsers on path, compare numeric figures across them.
+
+        ``read_path`` overrides where content is actually read from (e.g. a
+        decrypted copy of an encrypted ``path``); the report still labels
+        results with ``path``.
+        """
+        read_path = read_path or path
         results: dict[str, str] = {}
-        for parser in self.registry.all_for(str(path)):
+        for parser in self.registry.all_for(str(read_path)):
             cached = self.manifest.get_extraction(file_hash, parser.name)
             if cached is not None:
                 results[parser.name] = cached.get("text", "")
             else:
                 try:
-                    res = parser.extract(str(path), ocr=self.ocr)
+                    res = parser.extract(str(read_path), ocr=self.ocr)
                 except Exception as exc:
                     logging.warning("finance verify: %s failed on %s: %s", parser.name, path, exc)
                     continue
